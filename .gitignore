@@ -1,0 +1,4 @@
+left_overs/*
+RAS/plots/*
+models/__pycache__/*
+*.pdf
