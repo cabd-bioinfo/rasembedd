@@ -1,3 +1,10 @@
+## Interactive Visualization
+A new interactive Dash app is available for exploring protein embeddings and metadata with dynamic filtering and upload features.
+
+See the dedicated documentation here: [Interactive Visualization README](README_interactive_visualizations.md)
+
+### Screenshot
+![Interactive Visualization Screenshot](exampleplots/all_UMAP_projection_Family.name_prost_t5_embeddings.png)
 # Protein Embedding Visualization Toolkit
 
 This toolkit generates visualizations for protein embeddings, including:
@@ -38,6 +45,12 @@ See `generate_visualizations.py` for usage instructions and CLI options.
 This document describes the recommended pipeline for generating and visualizing protein embeddings using the provided scripts. Each step links to detailed documentation for the relevant script or module.
 
 ---
+
+## Interactive Visualization
+
+A new interactive Dash app is available for exploring protein embeddings and metadata with dynamic filtering and upload features.
+
+See the dedicated documentation here: [Interactive Visualization README](README_interactive_visualizations.md)
 
 ## Pipeline Steps
 
