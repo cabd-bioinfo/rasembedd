@@ -172,16 +172,29 @@ def get_color_palette(n_colors: int, palette_name: str = 'glasbey') -> List:
     else:
         return sns.color_palette(palette_name, n_colors=n_colors)
 
-def extract_species_from_uniprot(uniprot_ids: List[str]) -> List[str]:
-    """Extract species codes from UniProt IDs (part after underscore)."""
-    species_list = []
-    for uid in uniprot_ids:
-        if '_' in uid:
-            species = uid.split('_')[-1]  # Get part after last underscore
+def extract_species(ids: List[str], df: pd.DataFrame, species_column: str = "species") -> List[str]:
+    """Extract species from a column, fallback to UniProt ID parsing if column missing."""
+    if species_column in df.columns:
+        # Create a mapping from uniprot_id to species
+        if 'uniprot_id' in df.columns:
+            species_map = dict(zip(df['uniprot_id'], df[species_column]))
+            species_list = [species_map.get(uid, 'UNKNOWN') for uid in ids]
+            return species_list
         else:
-            species = 'UNKNOWN'  # For IDs without underscore
-        species_list.append(species)
-    return species_list
+            # If no uniprot_id column, return the whole species column
+            return df[species_column].tolist()
+    else:
+        # Fallback to UniProt ID parsing
+        print(f"Warning: Species column '{species_column}' not found. Available columns: {list(df.columns)}")
+        print("Falling back to UniProt ID parsing.")
+        species_list = []
+        for uid in ids:
+            if '_' in uid:
+                species = uid.split('_')[-1]
+            else:
+                species = 'UNKNOWN'
+            species_list.append(species)
+        return species_list
 
 def get_marker_shapes(n_species: int) -> List[str]:
     """Get different marker shapes for species visualization."""
@@ -326,14 +339,15 @@ def plot_projection(projection: np.ndarray, labels: List[int], method: str,
     
     # Set up species-based markers if requested
     show_species = kwargs.get('show_species', False)
-    if show_species and protein_ids is not None:
-        species_list = extract_species_from_uniprot(protein_ids)
+    species_column = kwargs.get('species_column', 'species')
+    df = kwargs.get('df', None)
+    if show_species and protein_ids is not None and df is not None:
+        species_list = extract_species(protein_ids, df, species_column)
         unique_species = list(set(species_list))
         unique_species.sort()  # Sort for consistent ordering
         species_markers = get_marker_shapes(len(unique_species))
         species_to_marker = dict(zip(unique_species, species_markers))
         markers = [species_to_marker[species] for species in species_list]
-        
         print(f"Found {len(unique_species)} species: {unique_species}")
     else:
         markers = None
@@ -347,11 +361,12 @@ def plot_projection(projection: np.ndarray, labels: List[int], method: str,
     if show_species and markers is not None:
         # Plot each species separately to use different markers
         for species in unique_species:
-            species_indices = [i for i, s in enumerate(extract_species_from_uniprot(protein_ids)) if s == species]
+            # Use extract_species to get species list for protein_ids
+            species_ids = extract_species(protein_ids, df, species_column)
+            species_indices = [i for i, s in enumerate(species_ids) if s == species]
             if species_indices:
                 species_projection = projection[species_indices]
                 species_colors = [colors[i] for i in species_indices]
-                
                 plt.scatter(
                     species_projection[:, 0],
                     species_projection[:, 1],
@@ -627,7 +642,9 @@ Examples:
     parser.add_argument('--label_fontsize', type=int, default=8,
                        help='Font size for protein ID labels (default: 8)')
     parser.add_argument('--show_species', action='store_true', default=True,
-                       help='Show species as different marker shapes (extracted from UniProt IDs) (default: True)')
+                       help='Show species as different marker shapes (from species column or UniProt IDs) (default: True)')
+    parser.add_argument('--species_column', default='species',
+                       help='Column name for species (default: species)')
     
     # Control options
     parser.add_argument('--skip_heatmap', action='store_true',
@@ -752,7 +769,8 @@ Examples:
                             protein_ids=df_filtered[args.id_column].tolist(),
                             reducer_params=reducer_params,
                             show_labels=args.show_labels, max_labels=args.max_labels,
-                            label_fontsize=args.label_fontsize, show_species=args.show_species
+                            label_fontsize=args.label_fontsize, show_species=args.show_species,
+                            species_column=args.species_column, df=df_filtered
                         )
         
         print("\n✅ All visualizations completed successfully!")
