@@ -4,12 +4,24 @@ Improved protein embedding visualization script.
 
 This script generates various visualizations for protein embeddings including:
 - Distance heatmaps with clustering
-- 2D projections (UMAP, t-SNE, PCA)
+- 2D projections (UMAP, t-SNE, PCA, PaCMAP)
 - Multiple input formats support (pickle, npz, hdf5)
 - Flexible output formats and customization options
+
+Supported dimensionality reduction methods:
+    - UMAP: Uniform Manifold Approximation and Projection
+    - t-SNE: t-distributed Stochastic Neighbor Embedding
+    - PCA: Principal Component Analysis
+    - PaCMAP: Pairwise Controlled Manifold Approximation Projection (https://github.com/YingfanWang/PaCMAP)
 """
 
 import argparse
+try:
+    import pacmap
+    PACMAP_AVAILABLE = True
+except ImportError:
+    PACMAP_AVAILABLE = False
+    print("Warning: PaCMAP not available. Install with: pip install pacmap")
 import pandas as pd
 import numpy as np
 import pickle
@@ -303,6 +315,7 @@ def compute_projection(embeddings: np.ndarray, method: str, random_seed: int = 4
             'metric': kwargs.get('umap_metric', 'euclidean')
         }
         reducer = umap.UMAP(**reducer_params)
+        projection = reducer.fit_transform(embeddings)
     elif method == 'TSNE':
         reducer_params = {
             'random_state': random_seed,
@@ -310,14 +323,23 @@ def compute_projection(embeddings: np.ndarray, method: str, random_seed: int = 4
             'max_iter': kwargs.get('max_iter', 1000)
         }
         reducer = TSNE(**reducer_params)
+        projection = reducer.fit_transform(embeddings)
     elif method == 'PCA':
         reducer = PCA(n_components=2, random_state=random_seed)
         reducer_params = {'n_components': 2}
+        projection = reducer.fit_transform(embeddings)
+    elif method == 'PaCMAP':
+        if not PACMAP_AVAILABLE:
+            raise ImportError("PaCMAP is not installed. Install with: pip install pacmap")
+        reducer_params = {
+            'n_components': 2,
+            'n_neighbors': kwargs.get('n_neighbors', 10),
+            'random_state': random_seed
+        }
+        reducer = pacmap.PaCMAP(n_components=reducer_params['n_components'], n_neighbors=reducer_params['n_neighbors'], random_state=reducer_params['random_state'])
+        projection = reducer.fit_transform(embeddings)
     else:
-        raise ValueError("Invalid projection method. Choose 'UMAP', 'TSNE', or 'PCA'.")
-    
-    # Fit and transform
-    projection = reducer.fit_transform(embeddings)
+        raise ValueError("Invalid projection method. Choose 'UMAP', 'TSNE', 'PCA', or 'PaCMAP'.")
     
     return projection, reducer_params
 
@@ -469,6 +491,8 @@ def plot_projection(projection: np.ndarray, labels: List[int], method: str,
         info_text = f"n_neighbors={reducer_params.get('n_neighbors', 'N/A')}, min_dist={reducer_params.get('min_dist', 'N/A')}"
     elif method == 'TSNE' and reducer_params:
         info_text = f"perplexity={reducer_params.get('perplexity', 'N/A')}, max_iter={reducer_params.get('max_iter', 'N/A')}"
+    elif method == 'PaCMAP' and reducer_params:
+        info_text = f"n_neighbors={reducer_params.get('n_neighbors', 'N/A')}"
     else:
         info_text = ""
     
@@ -566,37 +590,37 @@ def get_output_filename(base_name: str, method: str, color_column: str,
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate improved visualizations for protein embeddings.',
+        description='Generate improved visualizations for protein embeddings. Supports UMAP, t-SNE, PCA, and PaCMAP for dimensionality reduction.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Basic usage
   python generate_visualizations_improved.py data/metadata.tsv -e embeddings.pkl
-  
+
   # Multiple color columns with single embedding file
-  python generate_visualizations_improved.py data/metadata.tsv -e embeddings.pkl \\
-    --color_columns Family.name New Classic --methods UMAP TSNE
-  
-  # Multiple embedding files with single color column  
-  python generate_visualizations_improved.py data/metadata.tsv -e embeddings1.pkl \\
-    --embedding_files embeddings1.pkl embeddings2.pkl embeddings3.pkl \\
-    --color_column Family.name --methods UMAP
-  
+  python generate_visualizations_improved.py data/metadata.tsv -e embeddings.pkl \
+    --color_columns Family.name New Classic --methods UMAP TSNE PaCMAP
+
+  # Multiple embedding files with single color column
+  python generate_visualizations_improved.py data/metadata.tsv -e embeddings1.pkl \
+    --embedding_files embeddings1.pkl embeddings2.pkl embeddings3.pkl \
+    --color_column Family.name --methods UMAP PaCMAP
+
   # Multiple embedding files AND multiple color columns
-  python generate_visualizations_improved.py data/metadata.tsv -e embeddings1.pkl \\
-    --embedding_files embeddings1.pkl embeddings2.pkl \\
-    --color_columns Family.name New --methods UMAP TSNE PCA
-  
+  python generate_visualizations_improved.py data/metadata.tsv -e embeddings1.pkl \
+    --embedding_files embeddings1.pkl embeddings2.pkl \
+    --color_columns Family.name New --methods UMAP TSNE PCA PaCMAP
+
   # Custom parameters with protein ID labels and species markers
-  python generate_visualizations_improved.py data/metadata.tsv -e embeddings.h5 \\
-    --color_column Family.name --projection_method TSNE --palette_name husl \\
+  python generate_visualizations_improved.py data/metadata.tsv -e embeddings.h5 \
+    --color_column Family.name --projection_method PaCMAP --palette_name husl \
     --figsize 15 12 --output_format png --show_labels --show_species
-  
+
   # Large dataset comparison across models and classifications
-  python generate_visualizations_improved.py data/metadata.tsv -e model1.pkl \\
-    --embedding_files model1.pkl model2.pkl model3.pkl \\
-    --color_columns Family.name Classic New \\
-    --methods UMAP --skip_heatmap --max_labels 50
+  python generate_visualizations_improved.py data/metadata.tsv -e model1.pkl \
+    --embedding_files model1.pkl model2.pkl model3.pkl \
+    --color_columns Family.name Classic New \
+    --methods UMAP PaCMAP --skip_heatmap --max_labels 50
         """
     )
     
@@ -616,9 +640,9 @@ Examples:
                        choices=['cosine', 'euclidean'],
                        help='Distance metric for heatmap (default: cosine)')
     parser.add_argument('-p', '--projection_method', default='UMAP',
-                       choices=['UMAP', 'TSNE', 'PCA'],
+                       choices=['UMAP', 'TSNE', 'PCA', 'PaCMAP'],
                        help='Projection method (default: UMAP)')
-    parser.add_argument('--methods', nargs='+', choices=['UMAP', 'TSNE', 'PCA'],
+    parser.add_argument('--methods', nargs='+', choices=['UMAP', 'TSNE', 'PCA', 'PaCMAP'],
                        help='Generate multiple projection methods')
     parser.add_argument('--embedding_files', nargs='+',
                        help='Generate visualizations for multiple embedding files')
@@ -658,7 +682,7 @@ Examples:
     parser.add_argument('--random_seed', type=int, default=42,
                        help='Random seed for reproducibility (default: 42)')
     parser.add_argument('--n_neighbors', type=int, default=15,
-                       help='UMAP n_neighbors parameter (default: 15)')
+                       help='n_neighbors parameter for UMAP and PaCMAP (default: 15 for UMAP, 10 for PaCMAP)')
     parser.add_argument('--min_dist', type=float, default=0.1,
                        help='UMAP min_dist parameter (default: 0.1)')
     parser.add_argument('--perplexity', type=int, default=30,

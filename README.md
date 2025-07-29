@@ -1,3 +1,38 @@
+# Protein Embedding Visualization Toolkit
+
+This toolkit generates visualizations for protein embeddings, including:
+- Distance heatmaps with clustering
+- 2D projections (UMAP, t-SNE, PCA, PaCMAP)
+- Multiple input formats support (pickle, npz, hdf5)
+- Flexible output formats and customization options
+
+## Requirements
+- Python 3.7+
+- pandas
+- numpy
+- seaborn
+- matplotlib
+- scikit-learn
+- umap-learn
+- colorcet
+- h5py (optional, for HDF5 input)
+- pacmap (for PaCMAP projections)
+
+## Supported Dimensionality Reduction Methods
+- UMAP: Uniform Manifold Approximation and Projection
+- t-SNE: t-distributed Stochastic Neighbor Embedding
+- PCA: Principal Component Analysis
+- PaCMAP: Pairwise Controlled Manifold Approximation Projection ([GitHub](https://github.com/YingfanWang/PaCMAP))
+## Example Plots
+Example plots are available in the [`exampleplots/`](exampleplots/) directory:
+
+[![All heatmap cosine Family.name prost_t5 embeddings](exampleplots/all_heatmap_cosine_Family.name_prost_t5_embeddings.png)](exampleplots/all_heatmap_cosine_Family.name_prost_t5_embeddings.pdf)
+[![All PCA projection Family.name prost_t5 embeddings](exampleplots/all_PCA_projection_Family.name_prost_t5_embeddings.png)](exampleplots/all_PCA_projection_Family.name_prost_t5_embeddings.pdf)
+[![All TSNE projection Family.name prost_t5 embeddings](exampleplots/all_TSNE_projection_Family.name_prost_t5_embeddings.png)](exampleplots/all_TSNE_projection_Family.name_prost_t5_embeddings.pdf)
+[![PaCMAP projection Family.name ankh_s2s embeddings](exampleplots/PaCMAP_projection_Family.name_ankh_s2s_embeddings.png)](exampleplots/PaCMAP_projection_Family.name_ankh_s2s_embeddings.pdf)
+
+## Usage
+See `generate_visualizations.py` for usage instructions and CLI options.
 # Protein Embedding and Visualization Pipeline
 
 This document describes the recommended pipeline for generating and visualizing protein embeddings using the provided scripts. Each step links to detailed documentation for the relevant script or module.
@@ -45,7 +80,7 @@ python generate_embeddings.py --input data/RAS.fasta --input_type fasta --model_
 ---
 
 ### c) Generate Plots and Visualizations
-- Use the [`generate_visualizations.py`](README_generate_visualizations.md) script to create heatmaps and 2D projections (UMAP, t-SNE, PCA) from your embeddings and metadata.
+- Use the [`generate_visualizations.py`](README_generate_visualizations.md) script to create heatmaps and 2D projections (UMAP, t-SNE, PCA, PaCMAP) from your embeddings and metadata.
 
 **Example Command:**
 ```bash
@@ -55,14 +90,18 @@ python generate_visualizations.py data/RAS.updated.Info.Table.V7.tsv -e embeddin
 - See the [visualization script documentation](README_generate_visualizations.md) for all options and examples.
 - Example output files (click images for PDF):
 
+
 #### Heatmap
 [![Heatmap](exampleplots/all_heatmap_cosine_Family.name_prost_t5_embeddings.png)](exampleplots/all_heatmap_cosine_Family.name_prost_t5_embeddings.pdf)
 
-#### UMAP (PCA projection example)
-[![UMAP](exampleplots/all_PCA_projection_Family.name_prost_t5_embeddings.png)](exampleplots/all_PCA_projection_Family.name_prost_t5_embeddings.pdf)
+#### PCA
+[![PCA](exampleplots/all_PCA_projection_Family.name_prost_t5_embeddings.png)](exampleplots/all_PCA_projection_Family.name_prost_t5_embeddings.pdf)
 
 #### t-SNE
 [![t-SNE](exampleplots/all_TSNE_projection_Family.name_prost_t5_embeddings.png)](exampleplots/all_TSNE_projection_Family.name_prost_t5_embeddings.pdf)
+
+#### PaCMAP
+[![PaCMAP](exampleplots/PaCMAP_projection_Family.name_ankh_s2s_embeddings.png)](exampleplots/PaCMAP_projection_Family.name_ankh_s2s_embeddings.pdf)
 
 ---
 
