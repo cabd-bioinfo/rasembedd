@@ -81,6 +81,7 @@ df['Y'] = proj[:, 1]
 
 # --- DASH APP ---
 app = dash.Dash(__name__)
+server = app.server
 
 color_columns = [col for col in df.columns if df[col].nunique() < 30 and col != ID_COLUMN]
 species_column = DEFAULT_SPECIES_COLUMN if DEFAULT_SPECIES_COLUMN in df.columns else None
@@ -286,4 +287,4 @@ def update_plot(proj_method, color_col, species_filter, emb_file, annotation_con
 if __name__ == '__main__':
     import os
     port = int(os.environ.get('PORT', 8050))
-    app.run_server(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=True)
