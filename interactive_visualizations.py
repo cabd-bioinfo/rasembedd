@@ -185,7 +185,13 @@ def handle_uploads(annotation_contents, embedding_contents, annotation_filename,
                 report.append("All proteins matched between embeddings and metadata.")
             color_columns = [col for col in new_df.columns if new_df[col].nunique() < 30 and col != ID_COLUMN]
             color_options = [{'label': col, 'value': col} for col in color_columns]
-            color_value = color_options[0]['value'] if color_options else None
+            # Ensure the selected color column exists in the new table
+            if current_value in [opt['value'] for opt in color_options]:
+                color_value = current_value
+            elif color_options:
+                color_value = color_options[0]['value']
+            else:
+                color_value = None
             species_column = DEFAULT_SPECIES_COLUMN if DEFAULT_SPECIES_COLUMN in new_df.columns else None
             if species_column:
                 species_options = [{'label': s, 'value': s} for s in sorted(new_df[species_column].unique())]
@@ -243,14 +249,30 @@ def update_plot(proj_method, color_col, species_filter, emb_file, annotation_con
     dff = dff[dff[ID_COLUMN].isin(common_ids)].copy()
     dff = dff.set_index(ID_COLUMN).loc[list(common_ids)].reset_index()
     emb_array = np.array([emb[uid] for uid in dff[ID_COLUMN]])
+
+    # Robust validation
+    error_msg = None
+    if emb_array.size == 0:
+        error_msg = "No common proteins found between metadata and embeddings. Cannot project."
+    elif len(emb_array.shape) != 2 or emb_array.shape[1] < 2:
+        error_msg = f"Embeddings array is malformed: shape {emb_array.shape}."
+    elif np.isnan(emb_array).any() or np.isinf(emb_array).any():
+        error_msg = "Embeddings contain NaN or inf values."
+
+    if error_msg:
+        fig = px.scatter(x=[], y=[])
+        fig.update_layout(title=error_msg)
+        return fig
+
     try:
         proj = compute_projection(proj_method, emb_array)
         dff['X'] = proj[:, 0]
         dff['Y'] = proj[:, 1]
     except Exception as e:
-        proj = compute_projection('UMAP', emb_array)
-        dff['X'] = proj[:, 0]
-        dff['Y'] = proj[:, 1]
+        fig = px.scatter(x=[], y=[])
+        fig.update_layout(title=f"Projection error: {str(e)}")
+        return fig
+
     species_column = DEFAULT_SPECIES_COLUMN if DEFAULT_SPECIES_COLUMN in dff.columns else None
     if species_column and species_filter:
         dff = dff[dff[species_column].isin(species_filter)]
