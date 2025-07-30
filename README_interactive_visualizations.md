@@ -13,9 +13,9 @@ This Dash app provides an interactive interface for visualizing protein embeddin
 ## Usage
 
 ### 1. Install Requirements
-Ensure all dependencies are installed:
+Install all dependencies using the interactive requirements file:
 ```bash
-pip install dash plotly pandas numpy umap-learn scikit-learn pacmap
+pip install -r requirements_interactive.txt
 ```
 
 ### 2. Run the App
@@ -23,6 +23,27 @@ pip install dash plotly pandas numpy umap-learn scikit-learn pacmap
 python interactive_visualizations.py
 ```
 The app will start a local server (default: http://127.0.0.1:8050/).
+
+### CLI Configuration
+
+You can override default configuration parameters using CLI arguments:
+
+```bash
+python interactive_visualizations.py \
+  --embeddings RAS/embeddings/prost_t5_embeddings.pkl \
+  --metadata test/test_species.tsv \
+  --id_column uniprot_id \
+  --color_column Family.name \
+  --species_column species
+```
+
+**Parameters:**
+
+- `--embeddings`: Path to embeddings file (.pkl). Default: `RAS/embeddings/prost_t5_embeddings.pkl`
+- `--metadata`: Path to metadata file (.tsv or .csv). Default: `test/test_species.tsv`
+- `--id_column`: Column name for sequence IDs. Default: `uniprot_id`
+- `--color_column`: Default column for coloring. Default: `Family.name`
+- `--species_column`: Column name for species. Default: `species`
 
 ### 3. Upload Data
 - **Embeddings:** Upload `.pkl` files containing a dictionary mapping protein IDs to embedding vectors.

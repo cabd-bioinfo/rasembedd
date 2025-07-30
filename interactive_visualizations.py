@@ -10,12 +10,22 @@ from dash.dependencies import State
 import base64
 import io
 
-# --- CONFIG ---
-EMBEDDINGS_PATH = 'RAS/embeddings/prost_t5_embeddings.pkl'  # Change as needed
-METADATA_PATH = 'test/test_species.tsv'    # Change as needed
-ID_COLUMN = 'uniprot_id'
-DEFAULT_COLOR_COLUMN = 'Family.name'
-DEFAULT_SPECIES_COLUMN = 'species'
+
+# --- CLI CONFIG ---
+import argparse
+parser = argparse.ArgumentParser(description="Interactive Protein Embedding Visualization")
+parser.add_argument('--embeddings', default='RAS/embeddings/prost_t5_embeddings.pkl', help='Path to embeddings file (.pkl)')
+parser.add_argument('--metadata', default='test/test_species.tsv', help='Path to metadata file (.tsv or .csv)')
+parser.add_argument('--id_column', default='uniprot_id', help='Column name for sequence IDs')
+parser.add_argument('--color_column', default='Family.name', help='Default column for coloring')
+parser.add_argument('--species_column', default='species', help='Column name for species')
+args, unknown = parser.parse_known_args()
+
+EMBEDDINGS_PATH = args.embeddings
+METADATA_PATH = args.metadata
+ID_COLUMN = args.id_column
+DEFAULT_COLOR_COLUMN = args.color_column
+DEFAULT_SPECIES_COLUMN = args.species_column
 
 # --- LOAD DATA ---
 def load_embeddings(path):
