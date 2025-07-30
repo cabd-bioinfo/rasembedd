@@ -17,9 +17,25 @@ coverage>=7.0.0
 # Performance testing
 pytest-benchmark>=4.0.0
 
+# Development tools
+pre-commit>=4.0.0
+
 # Test data generation
 factory-boy>=3.2.0
 faker>=18.0.0
 
 # For testing with different environments
 tox>=4.0.0
+
+# Code quality and pre-commit hooks
+pre-commit>=3.0.0
+black>=24.0.0
+isort>=5.12.0
+flake8>=7.0.0
+flake8-docstrings>=1.7.0
+flake8-comprehensions>=3.14.0
+bandit>=1.7.0
+pydocstyle>=6.3.0
+
+# Notebook quality (if needed)
+nbqa>=1.8.0

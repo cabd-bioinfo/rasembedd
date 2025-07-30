@@ -206,7 +206,7 @@ Install optional dependencies for full test coverage:
 # For PaCMAP tests
 pip install pacmap
 
-# For HDF5 tests  
+# For HDF5 tests
 pip install h5py
 
 # For interactive tests
@@ -310,10 +310,10 @@ def test_function_name(fixture1, fixture2):
     """Test description of what is being validated."""
     # Arrange
     input_data = prepare_test_data()
-    
+
     # Act
     result = function_under_test(input_data)
-    
+
     # Assert
     assert result == expected_result
     assert_helper_function(result)
