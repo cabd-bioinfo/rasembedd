@@ -59,13 +59,13 @@ python generate_visualizations.py data/RAS.updated.Info.Table.V7.tsv -e embeddin
 ### Arguments
 - `input_table` (positional): Path to metadata table (TSV/CSV)
 - `-e`, `--embeddings`: Path to embeddings file (.pkl, .npz, .h5, .hdf5)
+- `--embedding_files`: List of embedding files to visualize
 - `-c`, `--color_column`: Column name for coloring (default: Family.name)
 - `--color_columns`: List of columns for multiple colorings
 - `--id_column`: Column name for sequence IDs (default: uniprot_id)
 - `-m`, `--distance_metric`: Distance metric for heatmap (`cosine`, `euclidean`, default: cosine)
--- `-p`, `--projection_method`: Projection method (`UMAP`, `TSNE`, `PCA`, `PaCMAP`, default: UMAP)
--- `--methods`: List of projection methods to generate (can include `PaCMAP`)
-- `--embedding_files`: List of embedding files to visualize
+- `-p`, `--projection_method`: Projection method (`UMAP`, `TSNE`, `PCA`, `PaCMAP`, default: UMAP)
+- `--methods`: List of projection methods to generate (can include `PaCMAP`)
 - `--palette_name`: Color palette (glasbey, tab10, Set3, husl, default: glasbey)
 - `--figsize`: Figure size (width height, default: 11.69 8.27)
 - `--output_format`: Output format (`pdf`, `png`, `svg`, default: pdf)
@@ -75,6 +75,8 @@ python generate_visualizations.py data/RAS.updated.Info.Table.V7.tsv -e embeddin
 - `--label_fontsize`: Font size for labels (default: 8)
 - `--show_species`: Use different markers for each species (from uniprot_id)
 - `--skip_heatmap`: Skip heatmap generation
+- `--skip_projection`: Skip projection generation
+- `--output_prefix`: Prefix for output filenames
 
 ---
 
