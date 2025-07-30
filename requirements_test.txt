@@ -1,0 +1,25 @@
+# Test requirements for the protein embedding project
+# Core testing framework
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+
+# Additional testing utilities
+pytest-xdist>=3.0.0  # For parallel test execution
+pytest-timeout>=2.1.0  # For test timeouts
+
+# Mock and patch utilities (included with pytest-mock, but explicit for clarity)
+mock>=4.0.0
+
+# Coverage reporting
+coverage>=7.0.0
+
+# Performance testing
+pytest-benchmark>=4.0.0
+
+# Test data generation
+factory-boy>=3.2.0
+faker>=18.0.0
+
+# For testing with different environments
+tox>=4.0.0
