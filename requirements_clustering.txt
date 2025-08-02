@@ -1,0 +1,10 @@
+# Additional requirements for clustering evaluation
+scikit-learn>=1.3.0
+umap-learn>=0.5.3
+seaborn>=0.12.0
+
+# Already in main requirements.txt:
+# numpy
+# pandas
+# matplotlib
+# plotly
