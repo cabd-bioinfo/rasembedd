@@ -12,6 +12,7 @@ htmlcov/
 .pytest_cache/
 .benchmarks/
 *_results/
+RAS_ALL/
 
 # IDE and editor files
 .vscode/
