@@ -243,6 +243,37 @@ class ClusteringEngine:
 
 
 class Visualizer:
+    def plot_truth_table(
+        self,
+        true_labels: np.ndarray,
+        cluster_labels: np.ndarray,
+        label_names: List[str],
+        output_path: str,
+        title: str = "Clustering Truth Table",
+    ):
+        """Plot confusion matrix (truth table) between true labels and cluster assignments, sorted for maximal diagonal."""
+        from scipy.optimize import linear_sum_assignment
+        from sklearn.metrics import confusion_matrix
+
+        cm = confusion_matrix(true_labels, cluster_labels)
+        # Use Hungarian algorithm to maximize diagonal
+        row_ind, col_ind = linear_sum_assignment(-cm)
+        cm_sorted = cm[row_ind][:, col_ind]
+        # Use actual unique true labels present in filtered data
+        unique_true_labels = np.unique(true_labels)
+        sorted_true_labels = [
+            label_names[i] if i < len(label_names) else f"Label {i}" for i in row_ind
+        ]
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm_sorted, annot=True, fmt="d", cmap="Blues")
+        plt.xlabel("Cluster Label (sorted)")
+        plt.ylabel("True Label (sorted)")
+        plt.title(title + " (sorted)")
+        plt.yticks(np.arange(len(sorted_true_labels)) + 0.5, sorted_true_labels, rotation=0)
+        plt.tight_layout()
+        plt.savefig(output_path, format="pdf", bbox_inches="tight")
+        plt.close()
+
     """Handles all plotting and visualization tasks."""
 
     @staticmethod
@@ -605,7 +636,6 @@ class ClusteringAnalyzer:
 
     def _generate_subsampling_plots(self, df: pd.DataFrame):
         """Generate subsampling distribution plots."""
-
         for metric_name in df["metric"].unique():
             # Boxplots
             plt.figure(figsize=(10, 6))
@@ -723,6 +753,18 @@ class ClusteringAnalyzer:
                 for metric_name, value in metrics.items():
                     print(f"{metric_name}: {value:.4f}")
 
+                # Plot truth table (confusion matrix) only in regular analysis
+                emb_name = os.path.splitext(os.path.basename(embedding_file))[0]
+                truth_table_path = os.path.join(
+                    self.config.output_dir, f"truth_table_{emb_name}_{method}.pdf"
+                )
+                self.visualizer.plot_truth_table(
+                    true_labels,
+                    cluster_labels,
+                    unique_labels,
+                    truth_table_path,
+                    title=f"Truth Table: {emb_name} ({method})",
+                )
             # Store results
             embedding_results[embedding_file] = {
                 "results": results,
