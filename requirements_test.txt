@@ -17,6 +17,9 @@ coverage>=7.0.0
 # Performance testing
 pytest-benchmark>=4.0.0
 
+# Statistical analysis for tests
+statsmodels>=0.13.0
+
 # Development tools
 pre-commit>=4.0.0
 
