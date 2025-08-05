@@ -102,6 +102,157 @@ class TestClusteringConfig:
 
         assert config.methods == ["dbscan", "hierarchical"]
 
+    def test_clustering_config_with_clustering_options(self):
+        """Test ClusteringConfig with clustering options."""
+        clustering_options = {
+            "kmeans_init": "k-means++",
+            "kmeans_max_iter": 500,
+            "hierarchical_linkage": "ward",
+            "hierarchical_metric": "euclidean",
+            "dbscan_eps": 0.3,
+            "dbscan_min_samples": 5,
+        }
+
+        config = ClusteringConfig(
+            embedding_files=["file1.pkl"],
+            metadata_file="metadata.tsv",
+            clustering_options=clustering_options,
+        )
+
+        assert config.clustering_options == clustering_options
+
+    def test_clustering_config_with_normalization_methods(self):
+        """Test ClusteringConfig with different normalization methods."""
+        for method in ["l2", "standard", "pca", "zca", "none"]:
+            config = ClusteringConfig(
+                embedding_files=["file1.pkl"],
+                metadata_file="metadata.tsv",
+                normalization_method=method,
+            )
+            assert config.normalization_method == method
+
+
+class TestClusteringOptions:
+    """Test cases for clustering algorithm options."""
+
+    def test_kmeans_with_options(self, sample_embeddings):
+        """Test K-means clustering with custom options."""
+        engine = ClusteringEngine()
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        # Test with custom init and max_iter
+        labels = engine.perform_clustering(
+            embeddings_array,
+            method="kmeans",
+            n_clusters=3,
+            init="random",
+            max_iter=50,
+        )
+
+        assert len(labels) == 5
+        assert len(np.unique(labels)) <= 3
+        assert all(label >= 0 for label in labels)
+
+    def test_hierarchical_with_options(self, sample_embeddings):
+        """Test hierarchical clustering with custom options."""
+        engine = ClusteringEngine()
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        # Test with custom linkage and metric
+        labels = engine.perform_clustering(
+            embeddings_array,
+            method="hierarchical",
+            n_clusters=2,
+            linkage="complete",
+            metric="manhattan",
+        )
+
+        assert len(labels) == 5
+        assert len(np.unique(labels)) == 2
+        assert all(label >= 0 for label in labels)
+
+    def test_hierarchical_ward_linkage_validation(self, sample_embeddings):
+        """Test that ward linkage requires euclidean metric."""
+        engine = ClusteringEngine()
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        # Ward linkage with non-euclidean metric should raise ValueError
+        with pytest.raises(ValueError, match="Ward linkage requires euclidean metric"):
+            engine.perform_clustering(
+                embeddings_array,
+                method="hierarchical",
+                n_clusters=2,
+                linkage="ward",
+                metric="manhattan",
+            )
+
+    def test_hierarchical_valid_linkage_metrics(self, sample_embeddings):
+        """Test hierarchical clustering with various valid linkage-metric combinations."""
+        engine = ClusteringEngine()
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        # Test valid combinations
+        valid_combinations = [
+            ("ward", "euclidean"),
+            ("complete", "euclidean"),
+            ("complete", "manhattan"),
+            ("average", "cosine"),
+            ("single", "l1"),
+        ]
+
+        for linkage, metric in valid_combinations:
+            labels = engine.perform_clustering(
+                embeddings_array,
+                method="hierarchical",
+                n_clusters=2,
+                linkage=linkage,
+                metric=metric,
+            )
+            assert len(labels) == 5
+            assert all(label >= 0 for label in labels)
+
+    def test_dbscan_with_options(self, sample_embeddings):
+        """Test DBSCAN clustering with custom options."""
+        engine = ClusteringEngine()
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        # Test with custom eps and min_samples
+        labels = engine.perform_clustering(
+            embeddings_array,
+            method="dbscan",
+            eps=0.5,
+            min_samples=2,
+        )
+
+        assert len(labels) == 5
+        # DBSCAN can have noise points (label -1)
+        assert all(label >= -1 for label in labels)
+
+    def test_clustering_options_parameter_passing(self, sample_embeddings):
+        """Test that clustering options are properly passed to algorithms."""
+        engine = ClusteringEngine()
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        # Mock the clustering algorithms to verify parameters are passed
+        with patch("clustering_evaluation.KMeans") as mock_kmeans:
+            mock_kmeans.return_value.fit_predict.return_value = np.array([0, 0, 1, 1, 2])
+
+            engine.perform_clustering(
+                embeddings_array,
+                method="kmeans",
+                n_clusters=3,
+                init="random",
+                max_iter=50,
+            )
+
+            # Verify KMeans was called with correct parameters
+            mock_kmeans.assert_called_once_with(
+                n_clusters=3,
+                init="random",
+                max_iter=50,
+                random_state=42,  # Default added by engine
+            )
+
 
 class TestDataLoader:
     """Test cases for DataLoader."""

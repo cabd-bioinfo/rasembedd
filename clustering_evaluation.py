@@ -62,6 +62,7 @@ class ClusteringConfig:
     n_clusters: Optional[int] = None
     max_clusters: int = 15
     normalization_method: str = "l2"
+    clustering_options: Dict[str, Any] = None
     subsample: int = 0
     subsample_fraction: float = 0.8
     stratified_subsample: bool = False
@@ -69,6 +70,8 @@ class ClusteringConfig:
     def __post_init__(self):
         if self.methods is None:
             self.methods = ["kmeans", "hierarchical"]
+        if self.clustering_options is None:
+            self.clustering_options = {}
 
 
 @dataclass
@@ -235,18 +238,27 @@ class ClusteringEngine:
         if method == "kmeans":
             if n_clusters is None:
                 n_clusters = 8  # Default
-            clusterer = KMeans(n_clusters=n_clusters, random_state=42, **kwargs)
+            # Set default random_state if not provided in kwargs
+            if "random_state" not in kwargs:
+                kwargs["random_state"] = 42
+            clusterer = KMeans(n_clusters=n_clusters, **kwargs)
             labels = clusterer.fit_predict(embeddings)
 
         elif method == "hierarchical":
             if n_clusters is None:
                 n_clusters = 8
+            # Validate ward linkage with euclidean metric
+            linkage = kwargs.get("linkage", "ward")
+            metric = kwargs.get("metric", "euclidean")
+            if linkage == "ward" and metric != "euclidean":
+                raise ValueError("Ward linkage requires euclidean metric")
             clusterer = AgglomerativeClustering(n_clusters=n_clusters, **kwargs)
             labels = clusterer.fit_predict(embeddings)
 
         elif method == "dbscan":
-            eps = kwargs.get("eps", 0.5)
-            min_samples = kwargs.get("min_samples", 5)
+            # Extract eps and min_samples, remove from kwargs to avoid duplication
+            eps = kwargs.pop("eps", 0.5)
+            min_samples = kwargs.pop("min_samples", 5)
             clusterer = DBSCAN(eps=eps, min_samples=min_samples, **kwargs)
             labels = clusterer.fit_predict(embeddings)
 
@@ -293,10 +305,14 @@ class ClusteringEngine:
         true_labels: np.ndarray,
         method: str = "kmeans",
         max_clusters: int = 15,
+        clustering_options: Dict[str, Any] = None,
     ) -> Tuple[Dict[str, int], Dict[int, Dict[str, float]]]:
         """Find optimal number of clusters using multiple criteria."""
 
         print(f"Finding optimal number of clusters for {method}...")
+
+        if clustering_options is None:
+            clustering_options = {}
 
         # Ensure we have a valid range for clustering
         max_possible_clusters = min(max_clusters + 1, len(embeddings))
@@ -313,7 +329,9 @@ class ClusteringEngine:
             }
             metrics_by_k = {
                 2: self.evaluate_clustering(
-                    self.perform_clustering(embeddings, method=method, n_clusters=2),
+                    self.perform_clustering(
+                        embeddings, method=method, n_clusters=2, **clustering_options
+                    ),
                     true_labels,
                     embeddings,
                 )
@@ -325,7 +343,9 @@ class ClusteringEngine:
 
         for k in cluster_range:
             print(f"Testing k={k}")
-            cluster_labels = self.perform_clustering(embeddings, method=method, n_clusters=k)
+            cluster_labels = self.perform_clustering(
+                embeddings, method=method, n_clusters=k, **clustering_options
+            )
             metrics = self.evaluate_clustering(cluster_labels, true_labels, embeddings)
             metrics_by_k[k] = metrics
 
@@ -626,9 +646,15 @@ class SubsamplingAnalyzer:
                 )
 
             for method in self.config.methods:
+                # Get method-specific options
+                method_options = self.config.clustering_options.get(method, {})
+
                 if self.config.n_clusters:
                     cluster_labels = self.clustering_engine.perform_clustering(
-                        emb_matrix, method=method, n_clusters=self.config.n_clusters
+                        emb_matrix,
+                        method=method,
+                        n_clusters=self.config.n_clusters,
+                        **method_options,
                     )
                 else:
                     best_k, _ = self.clustering_engine.find_optimal_clusters(
@@ -636,10 +662,11 @@ class SubsamplingAnalyzer:
                         sampled_labels,
                         method=method,
                         max_clusters=self.config.max_clusters,
+                        clustering_options=method_options,
                     )
                     optimal_k = best_k["adjusted_rand"]
                     cluster_labels = self.clustering_engine.perform_clustering(
-                        emb_matrix, method=method, n_clusters=optimal_k
+                        emb_matrix, method=method, n_clusters=optimal_k, **method_options
                     )
 
                 metrics = self.clustering_engine.evaluate_clustering(
@@ -900,9 +927,15 @@ class ClusteringAnalyzer:
             for method in self.config.methods:
                 print(f"\nClustering with {method}...")
 
+                # Get method-specific options
+                method_options = self.config.clustering_options.get(method, {})
+
                 if self.config.n_clusters:
                     cluster_labels = self.clustering_engine.perform_clustering(
-                        embedding_matrix, method=method, n_clusters=self.config.n_clusters
+                        embedding_matrix,
+                        method=method,
+                        n_clusters=self.config.n_clusters,
+                        **method_options,
                     )
                     n_clusters = self.config.n_clusters
                 else:
@@ -911,12 +944,13 @@ class ClusteringAnalyzer:
                         true_labels,
                         method=method,
                         max_clusters=self.config.max_clusters,
+                        clustering_options=method_options,
                     )
                     optimal_k = best_k["adjusted_rand"]
                     print(f"Optimal number of clusters: {optimal_k}")
 
                     cluster_labels = self.clustering_engine.perform_clustering(
-                        embedding_matrix, method=method, n_clusters=optimal_k
+                        embedding_matrix, method=method, n_clusters=optimal_k, **method_options
                     )
                     n_clusters = optimal_k
 
@@ -1095,6 +1129,45 @@ def parse_arguments() -> ClusteringConfig:
         default="l2",
         help="Normalization method to use (default: l2)",
     )
+
+    # Clustering algorithm options
+    parser.add_argument(
+        "--kmeans-init",
+        choices=["k-means++", "random"],
+        default="k-means++",
+        help="K-means initialization method (default: k-means++)",
+    )
+    parser.add_argument(
+        "--kmeans-max-iter",
+        type=int,
+        default=300,
+        help="Maximum iterations for K-means (default: 300)",
+    )
+    parser.add_argument(
+        "--hierarchical-linkage",
+        choices=["ward", "complete", "average", "single"],
+        default="ward",
+        help="Linkage criterion for hierarchical clustering (default: ward)",
+    )
+    parser.add_argument(
+        "--hierarchical-metric",
+        choices=["euclidean", "l1", "l2", "manhattan", "cosine"],
+        default="euclidean",
+        help="Distance metric for hierarchical clustering (default: euclidean). Note: ward linkage only supports euclidean.",
+    )
+    parser.add_argument(
+        "--dbscan-eps",
+        type=float,
+        default=0.5,
+        help="DBSCAN eps parameter (default: 0.5)",
+    )
+    parser.add_argument(
+        "--dbscan-min-samples",
+        type=int,
+        default=5,
+        help="DBSCAN min_samples parameter (default: 5)",
+    )
+
     parser.add_argument(
         "--subsample", type=int, default=0, help="Number of subsampling runs (0 to disable)"
     )
@@ -1112,6 +1185,27 @@ def parse_arguments() -> ClusteringConfig:
 
     args = parser.parse_args()
 
+    # Build clustering options dictionary
+    clustering_options = {
+        "kmeans": {
+            "init": args.kmeans_init,
+            "max_iter": args.kmeans_max_iter,
+        },
+        "hierarchical": {
+            "linkage": args.hierarchical_linkage,
+            "metric": args.hierarchical_metric,
+        },
+        "dbscan": {
+            "eps": args.dbscan_eps,
+            "min_samples": args.dbscan_min_samples,
+        },
+    }
+
+    # Validate hierarchical clustering parameters
+    if args.hierarchical_linkage == "ward" and args.hierarchical_metric != "euclidean":
+        print("Warning: Ward linkage only supports euclidean metric. Using euclidean metric.")
+        clustering_options["hierarchical"]["metric"] = "euclidean"
+
     return ClusteringConfig(
         embedding_files=args.embedding_files,
         metadata_file=args.metadata_file,
@@ -1122,6 +1216,7 @@ def parse_arguments() -> ClusteringConfig:
         n_clusters=args.n_clusters,
         max_clusters=args.max_clusters,
         normalization_method=args.normalization_method,
+        clustering_options=clustering_options,
         subsample=args.subsample,
         subsample_fraction=args.subsample_fraction,
         stratified_subsample=args.stratified_subsample,
