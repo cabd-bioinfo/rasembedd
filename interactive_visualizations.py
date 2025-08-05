@@ -65,17 +65,196 @@ def load_metadata(path_or_buffer):
         return pd.read_csv(path_or_buffer, sep=sep)
 
 
-embeddings = load_embeddings(EMBEDDINGS_PATH)
-df = load_metadata(METADATA_PATH)
+def validate_data_and_columns(df, embeddings, id_column, color_column, species_column):
+    """
+    Validate that required columns exist and data is properly formatted.
+
+    Args:
+        df: DataFrame with metadata
+        embeddings: Dictionary of embeddings
+        id_column: Column name for protein IDs
+        color_column: Column name for default coloring
+        species_column: Column name for species
+
+    Returns:
+        tuple: (is_valid, error_messages)
+    """
+    errors = []
+
+    # Check if metadata is empty
+    if df.empty:
+        errors.append(f"Metadata file '{METADATA_PATH}' is empty or could not be loaded.")
+        return False, errors
+
+    # Check if embeddings are empty
+    if not embeddings:
+        errors.append(f"Embeddings file '{EMBEDDINGS_PATH}' is empty or could not be loaded.")
+        return False, errors
+
+    # Check required columns exist in metadata
+    if id_column not in df.columns:
+        available_cols = ", ".join(df.columns.tolist())
+        errors.append(
+            f"ID column '{id_column}' not found in metadata.\n"
+            f"Available columns: {available_cols}\n"
+            f"Use --id_column to specify the correct column name."
+        )
+
+    if color_column not in df.columns:
+        available_cols = ", ".join(df.columns.tolist())
+        errors.append(
+            f"Color column '{color_column}' not found in metadata.\n"
+            f"Available columns: {available_cols}\n"
+            f"Use --color_column to specify the correct column name."
+        )
+
+    # Check species column if specified
+    if species_column and species_column not in df.columns:
+        available_cols = ", ".join(df.columns.tolist())
+        errors.append(
+            f"Species column '{species_column}' not found in metadata.\n"
+            f"Available columns: {available_cols}\n"
+            f"Use --species_column to specify the correct column name or remove this option."
+        )
+
+    # If ID column exists, check for overlapping IDs
+    if id_column in df.columns:
+        metadata_ids = set(df[id_column])
+        embedding_ids = set(embeddings.keys())
+        common_ids = metadata_ids.intersection(embedding_ids)
+
+        if not common_ids:
+            errors.append(
+                f"No common protein IDs found between metadata and embeddings.\n"
+                f"Metadata contains {len(metadata_ids)} IDs, embeddings contain {len(embedding_ids)} IDs.\n"
+                f"Check that the ID column '{id_column}' contains the correct protein identifiers."
+            )
+        elif len(common_ids) < 3:
+            errors.append(
+                f"Too few common protein IDs found ({len(common_ids)}).\n"
+                f"At least 3 common IDs are required for visualization.\n"
+                f"Metadata IDs: {len(metadata_ids)}, Embedding IDs: {len(embedding_ids)}, Common: {len(common_ids)}"
+            )
+
+    # Check if color column has reasonable number of unique values
+    if color_column in df.columns:
+        n_unique = df[color_column].nunique()
+        if n_unique > 50:
+            errors.append(
+                f"Color column '{color_column}' has too many unique values ({n_unique}).\n"
+                f"For visualization purposes, please choose a column with fewer categories (< 50)."
+            )
+        elif n_unique == 1:
+            errors.append(
+                f"Color column '{color_column}' has only one unique value.\n"
+                f"This will result in all points having the same color. Consider using a different column."
+            )
+
+    return len(errors) == 0, errors
+
+
+def print_error_and_exit(errors):
+    """Print formatted error messages and exit the program."""
+    print("\n" + "=" * 70)
+    print("❌ ERROR: Interactive Visualization Setup Failed")
+    print("=" * 70)
+
+    for i, error in enumerate(errors, 1):
+        print(f"\n{i}. {error}")
+
+    print("\n" + "=" * 70)
+    print("💡 Troubleshooting Tips:")
+    print("  • Check that file paths are correct")
+    print("  • Verify column names in your metadata file")
+    print("  • Ensure protein IDs match between metadata and embeddings")
+    print("  • Use --help to see all available options")
+    print("=" * 70)
+
+    import sys
+
+    sys.exit(1)
+
+
+# Load data with error handling
+try:
+    embeddings = load_embeddings(EMBEDDINGS_PATH)
+except FileNotFoundError:
+    print_error_and_exit([f"Embeddings file not found: {EMBEDDINGS_PATH}"])
+except Exception as e:
+    print_error_and_exit([f"Error loading embeddings file '{EMBEDDINGS_PATH}': {str(e)}"])
+
+try:
+    df = load_metadata(METADATA_PATH)
+except FileNotFoundError:
+    print_error_and_exit([f"Metadata file not found: {METADATA_PATH}"])
+except Exception as e:
+    print_error_and_exit([f"Error loading metadata file '{METADATA_PATH}': {str(e)}"])
+
+# Validate data and columns
+is_valid, errors = validate_data_and_columns(
+    df, embeddings, ID_COLUMN, DEFAULT_COLOR_COLUMN, DEFAULT_SPECIES_COLUMN
+)
+
+if not is_valid:
+    print_error_and_exit(errors)
 
 # Store uploaded metadata in memory
 uploaded_metadata = {"current": df}
 
 # --- Filter to common IDs ---
+print(f"📊 Data Summary:")
+print(f"  • Loaded {len(embeddings)} protein embeddings")
+print(f"  • Loaded metadata for {len(df)} proteins")
+
 common_ids = set(df[ID_COLUMN]).intersection(embeddings.keys())
+missing_in_metadata = set(embeddings.keys()) - set(df[ID_COLUMN])
+missing_in_embeddings = set(df[ID_COLUMN]) - set(embeddings.keys())
+
+print(f"  • Found {len(common_ids)} proteins with both metadata and embeddings")
+
+if missing_in_metadata:
+    print(f"  ⚠️  {len(missing_in_metadata)} proteins have embeddings but no metadata")
+if missing_in_embeddings:
+    print(f"  ⚠️  {len(missing_in_embeddings)} proteins have metadata but no embeddings")
+
+# Additional validation for filtered data
+if len(common_ids) < 3:
+    print_error_and_exit(
+        [
+            f"Insufficient data for visualization after filtering.\n"
+            f"Found only {len(common_ids)} proteins with both metadata and embeddings.\n"
+            f"At least 3 proteins are required for meaningful visualization."
+        ]
+    )
+
 df = df[df[ID_COLUMN].isin(common_ids)].copy()
 df = df.set_index(ID_COLUMN).loc[list(common_ids)].reset_index()
 emb_array = np.array([embeddings[uid] for uid in df[ID_COLUMN]])
+
+# Validate embedding array
+if emb_array.size == 0:
+    print_error_and_exit(["Embedding array is empty after filtering."])
+elif len(emb_array.shape) != 2:
+    print_error_and_exit(
+        [f"Embedding array has invalid shape: {emb_array.shape}. Expected 2D array."]
+    )
+elif emb_array.shape[1] < 2:
+    print_error_and_exit(
+        [f"Embeddings have insufficient dimensions: {emb_array.shape[1]}. Need at least 2."]
+    )
+elif np.isnan(emb_array).any():
+    print_error_and_exit(["Embeddings contain NaN values."])
+elif np.isinf(emb_array).any():
+    print_error_and_exit(["Embeddings contain infinite values."])
+
+print(f"✅ Successfully prepared {len(df)} proteins for visualization")
+print(f"   Embedding dimensions: {emb_array.shape[1]}")
+print(f"   Color by: {DEFAULT_COLOR_COLUMN} ({df[DEFAULT_COLOR_COLUMN].nunique()} categories)")
+if DEFAULT_SPECIES_COLUMN in df.columns:
+    print(
+        f"   Species filter: {DEFAULT_SPECIES_COLUMN} ({df[DEFAULT_SPECIES_COLUMN].nunique()} species)"
+    )
+print()
 
 # --- UMAP Projection ---
 
@@ -280,28 +459,102 @@ def handle_uploads(
         buffer = io.BytesIO(decoded)
         try:
             new_df = load_metadata(buffer)
+
+            # Validate uploaded metadata
+            if new_df.empty:
+                report.append("❌ Uploaded metadata file is empty.")
+                return (
+                    html.Div([html.P(line) for line in report]),
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                )
+
+            if ID_COLUMN not in new_df.columns:
+                available_cols = ", ".join(new_df.columns.tolist())
+                report.append(f"❌ ID column '{ID_COLUMN}' not found in uploaded metadata.")
+                report.append(f"Available columns: {available_cols}")
+                return (
+                    html.Div([html.P(line) for line in report]),
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                )
+
             uploaded_metadata["current"] = new_df
             emb_ids = set(embeddings.keys())
             meta_ids = set(new_df[ID_COLUMN])
             missing_in_meta = emb_ids - meta_ids
             missing_in_emb = meta_ids - emb_ids
+            common_ids = meta_ids.intersection(emb_ids)
+
+            # Provide detailed feedback
+            if not common_ids:
+                report.append(
+                    "❌ No common protein IDs found between uploaded metadata and embeddings!"
+                )
+                report.append(
+                    f"Metadata contains {len(meta_ids)} IDs, embeddings contain {len(emb_ids)} IDs."
+                )
+                return (
+                    html.Div([html.P(line, style={"color": "red"}) for line in report]),
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                )
+            elif len(common_ids) < 3:
+                report.append(
+                    f"⚠️ Only {len(common_ids)} common proteins found. Need at least 3 for visualization."
+                )
+                report.append(f"Metadata IDs: {len(meta_ids)}, Embedding IDs: {len(emb_ids)}")
+                return (
+                    html.Div([html.P(line, style={"color": "orange"}) for line in report]),
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                    dash.no_update,
+                )
+
+            # Success - provide feedback
+            report.append(f"✅ Successfully loaded metadata with {len(new_df)} proteins")
+            report.append(f"📊 Found {len(common_ids)} proteins with both metadata and embeddings")
             if missing_in_meta:
-                report.append(f"Proteins in embeddings not in metadata: {len(missing_in_meta)}")
+                report.append(f"ℹ️ {len(missing_in_meta)} proteins have embeddings but no metadata")
             if missing_in_emb:
-                report.append(f"Proteins in metadata not in embeddings: {len(missing_in_emb)}")
-            if not report:
-                report.append("All proteins matched between embeddings and metadata.")
+                report.append(f"ℹ️ {len(missing_in_emb)} proteins have metadata but no embeddings")
+
             color_columns = [
                 col for col in new_df.columns if new_df[col].nunique() < 30 and col != ID_COLUMN
             ]
             color_options = [{"label": col, "value": col} for col in color_columns]
+
             # Ensure the selected color column exists in the new table
             if current_value in [opt["value"] for opt in color_options]:
                 color_value = current_value
             elif color_options:
                 color_value = color_options[0]["value"]
+                report.append(
+                    f"ℹ️ Switched to color column '{color_value}' (original not available)"
+                )
             else:
                 color_value = None
+                report.append("⚠️ No suitable color columns found (need < 30 categories)")
+
             species_column = (
                 DEFAULT_SPECIES_COLUMN if DEFAULT_SPECIES_COLUMN in new_df.columns else None
             )
@@ -311,12 +564,28 @@ def handle_uploads(
                 ]
                 species_value = [s["value"] for s in species_options]
                 species_disabled = False
+                report.append(f"✅ Species filtering available: {len(species_options)} species")
             else:
                 species_options = []
                 species_value = []
                 species_disabled = True
+                if DEFAULT_SPECIES_COLUMN:
+                    report.append(
+                        f"ℹ️ Species column '{DEFAULT_SPECIES_COLUMN}' not found in uploaded data"
+                    )
+
         except Exception as e:
-            report.append(f"Error loading metadata: {str(e)}")
+            report.append(f"❌ Error loading metadata: {str(e)}")
+            return (
+                html.Div([html.P(line, style={"color": "red"}) for line in report]),
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+                dash.no_update,
+            )
     # Handle embedding upload
     if embedding_contents and embedding_filenames:
         for content, fname in zip(embedding_contents, embedding_filenames):
@@ -325,26 +594,75 @@ def handle_uploads(
                 decoded = base64.b64decode(content_string)
                 try:
                     emb = pickle.load(io.BytesIO(decoded))
+
+                    # Validate uploaded embeddings
+                    if not emb:
+                        report.append(f"❌ Uploaded embeddings file '{fname}' is empty.")
+                        continue
+
+                    if not isinstance(emb, dict):
+                        report.append(
+                            f"❌ Embeddings file '{fname}' is not in the expected format (should be a dictionary)."
+                        )
+                        continue
+
+                    # Check if embeddings contain valid numpy arrays
+                    sample_embedding = next(iter(emb.values()))
+                    if not isinstance(sample_embedding, np.ndarray):
+                        report.append(f"❌ Embeddings in '{fname}' are not numpy arrays.")
+                        continue
+
+                    if len(sample_embedding.shape) != 1:
+                        report.append(
+                            f"❌ Embeddings in '{fname}' should be 1D arrays, got shape {sample_embedding.shape}."
+                        )
+                        continue
+
                     uploaded_embeddings[fname] = emb
                     options.append({"label": fname, "value": fname})
                     value = fname
+
                     meta_df = get_current_metadata()
                     emb_ids = set(emb.keys())
                     meta_ids = set(meta_df[ID_COLUMN])
                     missing_in_meta = emb_ids - meta_ids
                     missing_in_emb = meta_ids - emb_ids
-                    if missing_in_meta:
+                    common_ids = emb_ids.intersection(meta_ids)
+
+                    # Provide detailed feedback
+                    report.append(
+                        f"✅ Successfully loaded embeddings '{fname}' with {len(emb)} proteins"
+                    )
+                    report.append(f"📊 Embedding dimensions: {sample_embedding.shape[0]}")
+
+                    if not common_ids:
                         report.append(
-                            f"Proteins in embeddings not in metadata: {len(missing_in_meta)}"
+                            f"❌ No common protein IDs found between '{fname}' and metadata!"
                         )
-                    if missing_in_emb:
                         report.append(
-                            f"Proteins in metadata not in embeddings: {len(missing_in_emb)}"
+                            f"Embedding IDs: {len(emb_ids)}, Metadata IDs: {len(meta_ids)}"
                         )
-                    if not report:
-                        report.append("All proteins matched between embeddings and metadata.")
-                except Exception:
-                    report.append(f"Error loading embeddings file: {fname}")
+                    elif len(common_ids) < 3:
+                        report.append(
+                            f"⚠️ Only {len(common_ids)} common proteins found with '{fname}'. Need at least 3."
+                        )
+                    else:
+                        report.append(
+                            f"✅ Found {len(common_ids)} proteins with both embeddings and metadata"
+                        )
+                        if missing_in_meta:
+                            report.append(
+                                f"ℹ️ {len(missing_in_meta)} proteins in '{fname}' not in metadata"
+                            )
+                        if missing_in_emb:
+                            report.append(
+                                f"ℹ️ {len(missing_in_emb)} proteins in metadata not in '{fname}'"
+                            )
+
+                except Exception as e:
+                    report.append(f"❌ Error loading embeddings file '{fname}': {str(e)}")
+            else:
+                report.append(f"ℹ️ Embeddings file '{fname}' already loaded")
     return (
         html.Div([html.P(line) for line in report]) if report else dash.no_update,
         color_options,
@@ -381,94 +699,151 @@ def update_plot(
     annotation_contents,
     annotation_filename,
 ):
-    emb = uploaded_embeddings.get(emb_file, embeddings)
-    dff = get_current_metadata()
-    common_ids = set(dff[ID_COLUMN]).intersection(emb.keys())
-    dff = dff[dff[ID_COLUMN].isin(common_ids)].copy()
-    dff = dff.set_index(ID_COLUMN).loc[list(common_ids)].reset_index()
-    emb_array = np.array([emb[uid] for uid in dff[ID_COLUMN]])
-
-    # Robust validation
-    error_msg = None
-    if emb_array.size == 0:
-        error_msg = "No common proteins found between metadata and embeddings. Cannot project."
-    elif len(emb_array.shape) != 2 or emb_array.shape[1] < 2:
-        error_msg = f"Embeddings array is malformed: shape {emb_array.shape}."
-    elif np.isnan(emb_array).any() or np.isinf(emb_array).any():
-        error_msg = "Embeddings contain NaN or inf values."
-
-    if error_msg:
-        fig = px.scatter(x=[], y=[])
-        fig.update_layout(title=error_msg)
-        return fig
-
     try:
-        proj = compute_projection(proj_method, emb_array)
-        dff["X"] = proj[:, 0]
-        dff["Y"] = proj[:, 1]
-    except Exception as e:
-        fig = px.scatter(x=[], y=[])
-        fig.update_layout(title=f"Projection error: {str(e)}")
+        emb = uploaded_embeddings.get(emb_file, embeddings)
+        dff = get_current_metadata()
+
+        # Check if required columns exist
+        if ID_COLUMN not in dff.columns:
+            fig = px.scatter(x=[], y=[])
+            fig.update_layout(title=f"❌ Error: ID column '{ID_COLUMN}' not found in metadata")
+            return fig
+
+        if color_col not in dff.columns:
+            fig = px.scatter(x=[], y=[])
+            fig.update_layout(title=f"❌ Error: Color column '{color_col}' not found in metadata")
+            return fig
+
+        common_ids = set(dff[ID_COLUMN]).intersection(emb.keys())
+
+        if not common_ids:
+            fig = px.scatter(x=[], y=[])
+            fig.update_layout(
+                title=f"❌ No common proteins found between metadata ({len(dff)} proteins) "
+                f"and embeddings ({len(emb)} proteins).<br>"
+                f"Check that protein IDs match between files."
+            )
+            return fig
+
+        if len(common_ids) < 3:
+            fig = px.scatter(x=[], y=[])
+            fig.update_layout(
+                title=f"❌ Too few common proteins ({len(common_ids)}) for visualization.<br>"
+                f"Need at least 3 proteins with both metadata and embeddings."
+            )
+            return fig
+
+        dff = dff[dff[ID_COLUMN].isin(common_ids)].copy()
+        dff = dff.set_index(ID_COLUMN).loc[list(common_ids)].reset_index()
+        emb_array = np.array([emb[uid] for uid in dff[ID_COLUMN]])
+
+        # Robust validation
+        error_msg = None
+        if emb_array.size == 0:
+            error_msg = "❌ Embedding array is empty after filtering"
+        elif len(emb_array.shape) != 2:
+            error_msg = (
+                f"❌ Embeddings array has invalid shape: {emb_array.shape} (expected 2D array)"
+            )
+        elif emb_array.shape[1] < 2:
+            error_msg = f"❌ Embeddings have insufficient dimensions: {emb_array.shape[1]} (need at least 2)"
+        elif np.isnan(emb_array).any():
+            error_msg = "❌ Embeddings contain NaN values"
+        elif np.isinf(emb_array).any():
+            error_msg = "❌ Embeddings contain infinite values"
+
+        if error_msg:
+            fig = px.scatter(x=[], y=[])
+            fig.update_layout(title=error_msg)
+            return fig
+
+        # Attempt projection
+        try:
+            proj = compute_projection(proj_method, emb_array)
+            dff["X"] = proj[:, 0]
+            dff["Y"] = proj[:, 1]
+        except Exception as e:
+            fig = px.scatter(x=[], y=[])
+            fig.update_layout(title=f"❌ {proj_method} projection failed: {str(e)}")
+            return fig
+
+        # Apply species filter if specified
+        species_column = DEFAULT_SPECIES_COLUMN if DEFAULT_SPECIES_COLUMN in dff.columns else None
+        if species_column and species_filter:
+            before_filter = len(dff)
+            dff = dff[dff[species_column].isin(species_filter)]
+            if len(dff) == 0:
+                fig = px.scatter(x=[], y=[])
+                fig.update_layout(
+                    title=f"❌ No proteins remain after species filtering.<br>"
+                    f"Selected species not found in {before_filter} proteins."
+                )
+                return fig
+
+        # Create the plot
+        fig = px.scatter(
+            dff,
+            x="X",
+            y="Y",
+            color=color_col,
+            hover_data=[ID_COLUMN, species_column] if species_column else [ID_COLUMN],
+            title=f"{proj_method} Projection of {len(dff)} proteins colored by {color_col}",
+            symbol=species_column if species_column else None,
+        )
+
+        # Style the plot
+        fig.update_traces(marker=dict(size=10, line=dict(width=0.5, color="black")))
+        fig.update_layout(
+            legend_title=color_col,
+            autosize=True,
+            margin=dict(l=20, r=20, t=40, b=20),
+            xaxis=dict(
+                scaleanchor="y",
+                scaleratio=1,
+                showline=True,
+                linewidth=2,
+                linecolor="black",
+                showgrid=True,
+                gridcolor="lightgray",
+                gridwidth=0.5,
+                zeroline=False,
+                title=f"{proj_method} 1",
+            ),
+            yaxis=dict(
+                showline=True,
+                linewidth=2,
+                linecolor="black",
+                showgrid=True,
+                gridcolor="lightgray",
+                gridwidth=0.5,
+                zeroline=False,
+                title=f"{proj_method} 2",
+            ),
+            width=None,
+            height=None,
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            shapes=[
+                dict(
+                    type="rect",
+                    xref="paper",
+                    yref="paper",
+                    x0=0,
+                    y0=0,
+                    x1=1,
+                    y1=1,
+                    line=dict(color="black", width=2),
+                    fillcolor="rgba(0,0,0,0)",
+                )
+            ],
+        )
         return fig
 
-    species_column = DEFAULT_SPECIES_COLUMN if DEFAULT_SPECIES_COLUMN in dff.columns else None
-    if species_column and species_filter:
-        dff = dff[dff[species_column].isin(species_filter)]
-    fig = px.scatter(
-        dff,
-        x="X",
-        y="Y",
-        color=color_col,
-        hover_data=[ID_COLUMN, species_column] if species_column else [ID_COLUMN],
-        title=f"{proj_method} Projection colored by {color_col}",
-        symbol=species_column if species_column else None,
-    )
-    fig.update_traces(marker=dict(size=10, line=dict(width=0.5, color="black")))
-    fig.update_layout(
-        legend_title=color_col,
-        autosize=True,
-        margin=dict(l=20, r=20, t=40, b=20),
-        xaxis=dict(
-            scaleanchor="y",
-            scaleratio=1,
-            showline=True,
-            linewidth=2,
-            linecolor="black",
-            showgrid=True,
-            gridcolor="lightgray",
-            gridwidth=0.5,
-            zeroline=False,
-            title="X",
-        ),
-        yaxis=dict(
-            showline=True,
-            linewidth=2,
-            linecolor="black",
-            showgrid=True,
-            gridcolor="lightgray",
-            gridwidth=0.5,
-            zeroline=False,
-            title="Y",
-        ),
-        width=None,
-        height=None,
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        shapes=[
-            dict(
-                type="rect",
-                xref="paper",
-                yref="paper",
-                x0=0,
-                y0=0,
-                x1=1,
-                y1=1,
-                line=dict(color="black", width=2),
-                fillcolor="rgba(0,0,0,0)",
-            )
-        ],
-    )
-    return fig
+    except Exception as e:
+        # Catch-all error handler
+        fig = px.scatter(x=[], y=[])
+        fig.update_layout(title=f"❌ Unexpected error: {str(e)}")
+        return fig
 
 
 if __name__ == "__main__":
