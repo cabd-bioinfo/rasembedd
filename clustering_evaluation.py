@@ -10,11 +10,16 @@ and evaluates clustering performance against known protein classifications.
 import argparse
 import os
 import pickle
+import warnings
+
+# Suppress specific deprecation warning from HDBSCAN library
+warnings.filterwarnings("ignore", message=".*force_all_finite.*", category=FutureWarning)
 import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import hdbscan
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -260,6 +265,15 @@ class ClusteringEngine:
             eps = kwargs.pop("eps", 0.5)
             min_samples = kwargs.pop("min_samples", 5)
             clusterer = DBSCAN(eps=eps, min_samples=min_samples, **kwargs)
+            labels = clusterer.fit_predict(embeddings)
+
+        elif method == "hdbscan":
+            # Extract min_cluster_size and min_samples, remove from kwargs to avoid duplication
+            min_cluster_size = kwargs.pop("min_cluster_size", 5)
+            min_samples = kwargs.pop("min_samples", None)  # HDBSCAN default is None
+            clusterer = hdbscan.HDBSCAN(
+                min_cluster_size=min_cluster_size, min_samples=min_samples, **kwargs
+            )
             labels = clusterer.fit_predict(embeddings)
 
         else:
@@ -1111,7 +1125,7 @@ def parse_arguments() -> ClusteringConfig:
         "--methods",
         nargs="+",
         default=["kmeans", "hierarchical"],
-        choices=["kmeans", "hierarchical", "dbscan"],
+        choices=["kmeans", "hierarchical", "dbscan", "hdbscan"],
         help="Clustering methods to use",
     )
     parser.add_argument(
@@ -1168,6 +1182,25 @@ def parse_arguments() -> ClusteringConfig:
         help="DBSCAN min_samples parameter (default: 5)",
     )
 
+    # HDBSCAN parameters
+    parser.add_argument(
+        "--hdbscan-min-cluster-size",
+        type=int,
+        default=5,
+        help="HDBSCAN min_cluster_size parameter (default: 5)",
+    )
+    parser.add_argument(
+        "--hdbscan-min-samples",
+        type=int,
+        help="HDBSCAN min_samples parameter (default: None, uses min_cluster_size)",
+    )
+    parser.add_argument(
+        "--hdbscan-cluster-selection-epsilon",
+        type=float,
+        default=0.0,
+        help="HDBSCAN cluster_selection_epsilon parameter (default: 0.0)",
+    )
+
     parser.add_argument(
         "--subsample", type=int, default=0, help="Number of subsampling runs (0 to disable)"
     )
@@ -1198,6 +1231,11 @@ def parse_arguments() -> ClusteringConfig:
         "dbscan": {
             "eps": args.dbscan_eps,
             "min_samples": args.dbscan_min_samples,
+        },
+        "hdbscan": {
+            "min_cluster_size": args.hdbscan_min_cluster_size,
+            "min_samples": args.hdbscan_min_samples,
+            "cluster_selection_epsilon": args.hdbscan_cluster_selection_epsilon,
         },
     }
 

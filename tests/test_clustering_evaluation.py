@@ -111,6 +111,8 @@ class TestClusteringConfig:
             "hierarchical_metric": "euclidean",
             "dbscan_eps": 0.3,
             "dbscan_min_samples": 5,
+            "hdbscan_min_cluster_size": 10,
+            "hdbscan_min_samples": 3,
         }
 
         config = ClusteringConfig(
@@ -226,6 +228,41 @@ class TestClusteringOptions:
 
         assert len(labels) == 5
         # DBSCAN can have noise points (label -1)
+        assert all(label >= -1 for label in labels)
+
+    def test_hdbscan_with_options(self, sample_embeddings):
+        """Test HDBSCAN clustering with custom options."""
+        engine = ClusteringEngine()
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        # Test with custom min_cluster_size and min_samples
+        labels = engine.perform_clustering(
+            embeddings_array,
+            method="hdbscan",
+            min_cluster_size=2,
+            min_samples=2,
+        )
+
+        assert len(labels) == 5
+        # HDBSCAN can have noise points (label -1)
+        assert all(label >= -1 for label in labels)
+
+    def test_hdbscan_with_all_options(self, sample_embeddings):
+        """Test HDBSCAN clustering with all available options."""
+        engine = ClusteringEngine()
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        # Test with all HDBSCAN parameters
+        labels = engine.perform_clustering(
+            embeddings_array,
+            method="hdbscan",
+            min_cluster_size=3,
+            min_samples=2,
+            cluster_selection_epsilon=0.1,
+        )
+
+        assert len(labels) == 5
+        # HDBSCAN can have noise points (label -1)
         assert all(label >= -1 for label in labels)
 
     def test_clustering_options_parameter_passing(self, sample_embeddings):
@@ -360,6 +397,17 @@ class TestClusteringEngine:
 
         assert len(labels) == 5
         # DBSCAN can have noise points (label -1)
+        assert all(label >= -1 for label in labels)
+
+    def test_perform_clustering_hdbscan(self, sample_embeddings):
+        """Test HDBSCAN clustering."""
+        engine = ClusteringEngine()
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        labels = engine.perform_clustering(embeddings_array, method="hdbscan")
+
+        assert len(labels) == 5
+        # HDBSCAN can have noise points (label -1)
         assert all(label >= -1 for label in labels)
 
     def test_perform_clustering_invalid_method(self, sample_embeddings):
