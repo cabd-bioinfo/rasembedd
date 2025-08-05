@@ -57,6 +57,9 @@ def main():
         action="store_true",
         help="Run only interactive visualization tests",
     )
+    parser.add_argument(
+        "--clustering", action="store_true", help="Run only clustering evaluation tests"
+    )
     parser.add_argument("--benchmark", action="store_true", help="Run benchmark tests")
     parser.add_argument("--html-report", action="store_true", help="Generate HTML coverage report")
     parser.add_argument("--junit-xml", help="Generate JUnit XML report")
@@ -82,6 +85,7 @@ def main():
                 "--cov=generate_embeddings",
                 "--cov=generate_visualizations",
                 "--cov=interactive_visualizations",
+                "--cov=clustering_evaluation",
             ]
         )
         cmd.extend(["--cov-report=term-missing"])
@@ -131,6 +135,9 @@ def main():
     elif args.interactive:
         # Interactive visualization tests only
         cmd.extend(["tests/test_interactive_visualizations.py"])
+    elif args.clustering:
+        # Clustering evaluation tests only
+        cmd.extend(["tests/test_clustering_evaluation.py"])
     elif args.benchmark:
         # Benchmark tests
         cmd.extend(["--benchmark-only"])
