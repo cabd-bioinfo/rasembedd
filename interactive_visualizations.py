@@ -12,6 +12,8 @@ import plotly.express as px
 import umap
 from dash import Input, Output, dcc, html
 from dash.dependencies import State
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler, normalize
 
 parser = argparse.ArgumentParser(description="Interactive Protein Embedding Visualization")
 parser.add_argument(
@@ -27,6 +29,12 @@ parser.add_argument(
 parser.add_argument("--id_column", default="uniprot_id", help="Column name for sequence IDs")
 parser.add_argument("--color_column", default="Family.name", help="Default column for coloring")
 parser.add_argument("--species_column", default="species", help="Column name for species")
+parser.add_argument(
+    "--normalization-method",
+    choices=["standard", "l2", "pca", "zca", "none"],
+    default="l2",
+    help="Normalization method to use (default: l2)",
+)
 args, unknown = parser.parse_known_args()
 
 EMBEDDINGS_PATH = args.embeddings
@@ -34,6 +42,7 @@ METADATA_PATH = args.metadata
 ID_COLUMN = args.id_column
 DEFAULT_COLOR_COLUMN = args.color_column
 DEFAULT_SPECIES_COLUMN = args.species_column
+DEFAULT_NORMALIZATION_METHOD = args.normalization_method
 
 
 # --- LOAD DATA ---
@@ -153,6 +162,88 @@ def validate_data_and_columns(df, embeddings, id_column, color_column, species_c
     return len(errors) == 0, errors
 
 
+class EmbeddingNormalizer:
+    """Handles different normalization methods for embeddings."""
+
+    @staticmethod
+    def normalize_embeddings(embeddings: np.ndarray, method: str = "standard") -> np.ndarray:
+        """Apply normalization to embeddings using the specified method.
+
+        Args:
+            embeddings: Input embeddings of shape (n_samples, n_features)
+            method: Normalization method ("standard", "l2", "pca", "zca", "none")
+
+        Returns:
+            Normalized embeddings of the same shape
+        """
+        if method == "none" or not method:
+            return embeddings
+
+        if method == "standard":
+            return EmbeddingNormalizer._standard_normalization(embeddings)
+        elif method == "l2":
+            return EmbeddingNormalizer._l2_normalization(embeddings)
+        elif method == "pca":
+            return EmbeddingNormalizer._pca_whitening(embeddings)
+        elif method == "zca":
+            return EmbeddingNormalizer._zca_whitening(embeddings)
+        else:
+            available_methods = ["standard", "l2", "pca", "zca", "none"]
+            raise ValueError(
+                f"Unknown normalization method '{method}'. Available methods: {available_methods}"
+            )
+
+    @staticmethod
+    def _standard_normalization(embeddings: np.ndarray) -> np.ndarray:
+        """Standard normalization (z-score): mean=0, std=1 for each feature."""
+        scaler = StandardScaler()
+        return scaler.fit_transform(embeddings)
+
+    @staticmethod
+    def _l2_normalization(embeddings: np.ndarray) -> np.ndarray:
+        """L2 normalization: each sample has unit norm."""
+        return normalize(embeddings, norm="l2", axis=1)
+
+    @staticmethod
+    def _pca_whitening(embeddings: np.ndarray) -> np.ndarray:
+        """PCA whitening: decorrelate features and scale to unit variance."""
+        # Center the data
+        mean = np.mean(embeddings, axis=0)
+        centered = embeddings - mean
+
+        # Compute PCA
+        pca = PCA(whiten=True)
+        whitened = pca.fit_transform(centered)
+
+        return whitened
+
+    @staticmethod
+    def _zca_whitening(embeddings: np.ndarray, epsilon: float = 1e-5) -> np.ndarray:
+        """ZCA whitening: decorrelate features while preserving original space structure."""
+        # Center the data
+        mean = np.mean(embeddings, axis=0)
+        centered = embeddings - mean
+
+        # Compute covariance matrix
+        cov = np.cov(centered.T)
+
+        # Compute eigendecomposition
+        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+
+        # Add small epsilon to prevent division by zero
+        eigenvalues = eigenvalues + epsilon
+
+        # Compute ZCA whitening matrix
+        # ZCA = V * D^(-1/2) * V^T where V is eigenvectors, D is eigenvalues
+        sqrt_inv_eigenvalues = np.diag(1.0 / np.sqrt(eigenvalues))
+        whitening_matrix = eigenvectors @ sqrt_inv_eigenvalues @ eigenvectors.T
+
+        # Apply whitening
+        whitened = centered @ whitening_matrix.T
+
+        return whitened
+
+
 def print_error_and_exit(errors):
     """Print formatted error messages and exit the program."""
     print("\n" + "=" * 70)
@@ -259,7 +350,6 @@ print()
 # --- UMAP Projection ---
 
 # --- Projection Methods ---
-from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
 try:
@@ -344,6 +434,19 @@ app.layout = html.Div(
                                 + (["PaCMAP"] if PACMAP_AVAILABLE else [])
                             ],
                             value=DEFAULT_PROJECTION,
+                            clearable=False,
+                        ),
+                        html.Label("Normalization method:"),
+                        dcc.Dropdown(
+                            id="normalization-method",
+                            options=[
+                                {"label": "Standard (z-score)", "value": "standard"},
+                                {"label": "L2 (unit norm)", "value": "l2"},
+                                {"label": "PCA whitening", "value": "pca"},
+                                {"label": "ZCA whitening", "value": "zca"},
+                                {"label": "None", "value": "none"},
+                            ],
+                            value=DEFAULT_NORMALIZATION_METHOD,
                             clearable=False,
                         ),
                         html.Label("Dimensions:"),
@@ -694,6 +797,7 @@ def get_current_metadata():
     Output("projection-plot", "figure"),
     [
         Input("projection-method", "value"),
+        Input("normalization-method", "value"),
         Input("projection-dimensions", "value"),
         Input("color-column", "value"),
         Input("species-filter", "value"),
@@ -704,6 +808,7 @@ def get_current_metadata():
 )
 def update_plot(
     proj_method,
+    norm_method,
     n_dimensions,
     color_col,
     species_filter,
@@ -769,6 +874,15 @@ def update_plot(
             fig.update_layout(title=error_msg)
             return fig
 
+        # Apply normalization if specified
+        if norm_method != "none":
+            try:
+                emb_array = EmbeddingNormalizer.normalize_embeddings(emb_array, norm_method)
+            except Exception as e:
+                fig = px.scatter(x=[], y=[])
+                fig.update_layout(title=f"❌ {norm_method} normalization failed: {str(e)}")
+                return fig
+
         # Attempt projection
         try:
             proj = compute_projection(proj_method, emb_array, n_components=n_dimensions)
@@ -795,6 +909,7 @@ def update_plot(
                 return fig
 
         # Create the plot
+        norm_label = f" ({norm_method} norm)" if norm_method != "none" else ""
         if n_dimensions == 3:
             fig = px.scatter_3d(
                 dff,
@@ -803,7 +918,7 @@ def update_plot(
                 z="Z",
                 color=color_col,
                 hover_data=[ID_COLUMN, species_column] if species_column else [ID_COLUMN],
-                title=f"{proj_method} 3D Projection of {len(dff)} proteins colored by {color_col}",
+                title=f"{proj_method} 3D Projection{norm_label} of {len(dff)} proteins colored by {color_col}",
                 symbol=species_column if species_column else None,
             )
         else:
@@ -813,7 +928,7 @@ def update_plot(
                 y="Y",
                 color=color_col,
                 hover_data=[ID_COLUMN, species_column] if species_column else [ID_COLUMN],
-                title=f"{proj_method} 2D Projection of {len(dff)} proteins colored by {color_col}",
+                title=f"{proj_method} 2D Projection{norm_label} of {len(dff)} proteins colored by {color_col}",
                 symbol=species_column if species_column else None,
             )
 

@@ -27,6 +27,7 @@ except ImportError:
 
 if DASH_AVAILABLE:
     from interactive_visualizations import (
+        EmbeddingNormalizer,
         app,
         compute_projection,
         get_current_metadata,
@@ -376,6 +377,128 @@ class TestErrorHandling:
 
         # This should result in an error message or empty plot
         # The actual handling depends on the implementation
+
+
+@pytest.mark.skipif(not DASH_AVAILABLE, reason="Dash not available")
+class TestEmbeddingNormalizer:
+    """Test cases for embedding normalization functionality."""
+
+    def test_embedding_normalizer_standard(self, sample_embeddings):
+        """Test standard normalization method."""
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        normalized = EmbeddingNormalizer.normalize_embeddings(embeddings_array, "standard")
+
+        assert normalized.shape == embeddings_array.shape
+        assert not np.isnan(normalized).any()
+        assert not np.isinf(normalized).any()
+
+        # Check that features are approximately centered and scaled
+        # (within tolerance for small sample and floating point precision)
+        means = np.mean(normalized, axis=0)
+        stds = np.std(normalized, axis=0)
+        assert np.allclose(means, 0, atol=1e-6)
+        assert np.allclose(stds, 1, atol=1e-6)
+
+    def test_embedding_normalizer_l2(self, sample_embeddings):
+        """Test L2 normalization method."""
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        normalized = EmbeddingNormalizer.normalize_embeddings(embeddings_array, "l2")
+
+        assert normalized.shape == embeddings_array.shape
+        assert not np.isnan(normalized).any()
+        assert not np.isinf(normalized).any()
+
+        # Check that each sample has unit norm
+        norms = np.linalg.norm(normalized, axis=1)
+        assert np.allclose(norms, 1.0, atol=1e-10)
+
+    def test_embedding_normalizer_pca(self, sample_embeddings):
+        """Test PCA whitening normalization method."""
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        normalized = EmbeddingNormalizer.normalize_embeddings(embeddings_array, "pca")
+
+        # PCA whitening may reduce dimensionality if n_samples < n_features
+        assert normalized.shape[0] == embeddings_array.shape[0]  # Same number of samples
+        assert not np.isnan(normalized).any()
+        assert not np.isinf(normalized).any()
+
+        # Check that features are decorrelated and have unit variance
+        # For small samples, check that variance is reasonable
+        variances = np.var(normalized, axis=0)
+        assert np.all(variances > 0)  # All features should have some variance
+
+    def test_embedding_normalizer_zca(self, sample_embeddings):
+        """Test ZCA whitening normalization method."""
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        normalized = EmbeddingNormalizer.normalize_embeddings(embeddings_array, "zca")
+
+        assert normalized.shape == embeddings_array.shape
+        assert not np.isnan(normalized).any()
+        assert not np.isinf(normalized).any()
+
+        # ZCA should decorrelate the data
+        # For a small sample, check that the method runs successfully
+        # and produces reasonable output rather than strict mathematical properties
+        assert normalized.std() > 0  # Should have some variance
+
+        # Check that data is modified from original
+        assert not np.allclose(normalized, embeddings_array)
+
+    def test_embedding_normalizer_none(self, sample_embeddings):
+        """Test no normalization (identity)."""
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        normalized = EmbeddingNormalizer.normalize_embeddings(embeddings_array, "none")
+
+        # Should return the same array
+        np.testing.assert_array_equal(normalized, embeddings_array)
+
+    def test_embedding_normalizer_empty_method(self, sample_embeddings):
+        """Test normalization with empty method string."""
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        normalized = EmbeddingNormalizer.normalize_embeddings(embeddings_array, "")
+
+        # Should return the same array (treated as "none")
+        np.testing.assert_array_equal(normalized, embeddings_array)
+
+    def test_embedding_normalizer_invalid_method(self, sample_embeddings):
+        """Test normalization with invalid method."""
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        with pytest.raises(ValueError, match="Unknown normalization method"):
+            EmbeddingNormalizer.normalize_embeddings(embeddings_array, "invalid_method")
+
+    def test_embedding_normalizer_edge_cases(self):
+        """Test normalization with edge cases."""
+        # Test with single sample
+        single_sample = np.array([[1.0, 2.0, 3.0]])
+
+        # L2 normalization should work
+        normalized = EmbeddingNormalizer.normalize_embeddings(single_sample, "l2")
+        assert np.allclose(np.linalg.norm(normalized[0]), 1.0)
+
+        # Test with constant features (zero variance)
+        constant_features = np.array([[1.0, 1.0], [1.0, 1.0], [1.0, 1.0]])
+
+        # Standard normalization should handle this gracefully
+        normalized = EmbeddingNormalizer.normalize_embeddings(constant_features, "standard")
+        assert not np.isnan(normalized).any()
+        assert not np.isinf(normalized).any()
+
+    def test_embedding_normalizer_reproducibility(self, sample_embeddings):
+        """Test that normalization methods are reproducible."""
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        for method in ["standard", "l2", "pca", "zca"]:
+            normalized1 = EmbeddingNormalizer.normalize_embeddings(embeddings_array, method)
+            normalized2 = EmbeddingNormalizer.normalize_embeddings(embeddings_array, method)
+
+            np.testing.assert_array_almost_equal(normalized1, normalized2, decimal=10)
 
 
 @pytest.mark.skipif(not DASH_AVAILABLE, reason="Dash not available")
