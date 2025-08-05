@@ -366,7 +366,7 @@ def compute_projection(
     if method == "UMAP":
         reducer_params = {
             "random_state": random_seed,
-            "n_neighbors": kwargs.get("n_neighbors", 15),
+            "n_neighbors": min(kwargs.get("n_neighbors", 15), len(embeddings) - 1),
             "min_dist": kwargs.get("min_dist", 0.1),
             "metric": kwargs.get("umap_metric", "euclidean"),
         }
@@ -389,7 +389,7 @@ def compute_projection(
             raise ImportError("PaCMAP is not installed. Install with: pip install pacmap")
         reducer_params = {
             "n_components": 2,
-            "n_neighbors": kwargs.get("n_neighbors", 10),
+            "n_neighbors": min(kwargs.get("n_neighbors", 10), len(embeddings) - 1),
             "random_state": random_seed,
         }
         reducer = pacmap.PaCMAP(

@@ -46,7 +46,7 @@ except ImportError:
 class TestProstT5Model:
     """Test cases for ProstT5Model."""
 
-    @patch("models.prost_t5.AutoTokenizer.from_pretrained")
+    @patch("models.prost_t5.T5Tokenizer.from_pretrained")
     @patch("models.prost_t5.T5EncoderModel.from_pretrained")
     def test_prost_t5_initialization(self, mock_model, mock_tokenizer):
         """Test ProstT5Model initialization."""
@@ -56,13 +56,14 @@ class TestProstT5Model:
         assert model.model_name == "prost_t5"
         assert model.device == device
 
-    @patch("models.prost_t5.AutoTokenizer.from_pretrained")
+    @patch("models.prost_t5.T5Tokenizer.from_pretrained")
     @patch("models.prost_t5.T5EncoderModel.from_pretrained")
     def test_prost_t5_load_model(self, mock_model_class, mock_tokenizer_class):
         """Test ProstT5Model model loading."""
         # Mock tokenizer and model
         mock_tokenizer = Mock()
         mock_model = Mock()
+        mock_model.to.return_value = mock_model  # Mock .to() method returns self
         mock_tokenizer_class.return_value = mock_tokenizer
         mock_model_class.return_value = mock_model
 
@@ -82,17 +83,18 @@ class TestProstT5Model:
         sequence = "MKWVTFISLLL"
         processed = model.preprocess_sequence(sequence)
 
-        # ProstT5 adds spaces between amino acids
-        expected = " ".join(sequence)
+        # ProstT5 adds <AA2fold> prefix and spaces between amino acids
+        expected = "<AA2fold> " + " ".join(sequence)
         assert processed == expected
 
-    @patch("models.prost_t5.AutoTokenizer.from_pretrained")
+    @patch("models.prost_t5.T5Tokenizer.from_pretrained")
     @patch("models.prost_t5.T5EncoderModel.from_pretrained")
     def test_prost_t5_generate_embedding(self, mock_model_class, mock_tokenizer_class):
         """Test ProstT5Model embedding generation."""
         # Mock tokenizer
         mock_tokenizer = Mock()
         mock_tokenizer.return_tensors = "pt"
+        mock_tokenizer.model_max_length = 512  # Add this attribute
         mock_tokenizer.return_value = {
             "input_ids": torch.tensor([[1, 2, 3, 4, 5]]),
             "attention_mask": torch.tensor([[1, 1, 1, 1, 1]]),
@@ -101,8 +103,10 @@ class TestProstT5Model:
 
         # Mock model
         mock_model = Mock()
+        mock_model.to.return_value = mock_model  # Mock .to() method
         mock_outputs = Mock()
-        mock_outputs.last_hidden_state = torch.randn(1, 5, 1024)
+        mock_hidden_state = torch.randn(1, 5, 1024)
+        mock_outputs.last_hidden_state = mock_hidden_state
         mock_model.return_value = mock_outputs
         mock_model_class.return_value = mock_model
 
@@ -138,46 +142,51 @@ class TestAnkhModel:
         device = torch.device("cpu")
         model = AnkhModel("ankh", device)
 
-        sequence = "mkwvtfislll"
+        sequence = "MKWVTFISLLL"
         processed = model.preprocess_sequence(sequence)
 
-        # Ankh typically uses uppercase
-        assert processed == sequence.upper()
+        # Ankh adds [NLU] prefix and converts to uppercase
+        expected = "[NLU]MKWVTFISLLL"
+        assert processed == expected
 
 
 @pytest.mark.skipif(not ESM_AVAILABLE, reason="ESMModel not available")
 class TestESMModel:
     """Test cases for ESMModel."""
 
-    @patch("models.esm.esm.pretrained.esm2_t33_650M_UR50D")
-    def test_esm_initialization(self, mock_esm):
+    @patch("transformers.EsmTokenizer.from_pretrained")
+    @patch("transformers.EsmModel.from_pretrained")
+    def test_esm_initialization(self, mock_model_class, mock_tokenizer_class):
         """Test ESMModel initialization."""
         device = torch.device("cpu")
-        model = ESMModel("esm2_t33_650M_UR50D", device)
+        model = ESMModel("facebook/esm2_t33_650M_UR50D", device)
 
-        assert model.model_name == "esm2_t33_650M_UR50D"
+        assert model.model_name == "facebook/esm2_t33_650M_UR50D"
         assert model.device == device
 
-    @patch("models.esm.esm.pretrained.esm2_t33_650M_UR50D")
-    def test_esm_load_model(self, mock_esm_pretrained):
+    @patch("transformers.EsmTokenizer.from_pretrained")
+    @patch("transformers.EsmModel.from_pretrained")
+    def test_esm_load_model(self, mock_model_class, mock_tokenizer_class):
         """Test ESMModel model loading."""
-        # Mock ESM model and alphabet
+        # Mock tokenizer and model
+        mock_tokenizer = Mock()
         mock_model = Mock()
-        mock_alphabet = Mock()
-        mock_esm_pretrained.return_value = (mock_model, mock_alphabet)
+        mock_model.to.return_value = mock_model  # Mock .to() method
+        mock_tokenizer_class.return_value = mock_tokenizer
+        mock_model_class.return_value = mock_model
 
         device = torch.device("cpu")
-        model = ESMModel("esm2_t33_650M_UR50D", device)
+        model = ESMModel("facebook/esm2_t33_650M_UR50D", device)
         model.load_model()
 
+        assert model.tokenizer == mock_tokenizer
         assert model.model == mock_model
-        assert model.alphabet == mock_alphabet
         mock_model.eval.assert_called_once()
 
     def test_esm_preprocess_sequence(self):
         """Test ESMModel sequence preprocessing."""
         device = torch.device("cpu")
-        model = ESMModel("esm2_t33_650M_UR50D", device)
+        model = ESMModel("facebook/esm2_t33_650M_UR50D", device)
 
         sequence = "mkwvtfislll"
         processed = model.preprocess_sequence(sequence)

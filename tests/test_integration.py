@@ -271,7 +271,10 @@ class TestFullPipeline:
 
         # Simulate distance calculation
         embeddings_array = np.array(list(large_embeddings.values()))
-        distances = np.random.randn(n_sequences, n_sequences)  # Mock calculation
+        # Create a symmetric distance matrix
+        random_matrix = np.random.randn(n_sequences, n_sequences)
+        distances = (random_matrix + random_matrix.T) / 2  # Make symmetric
+        np.fill_diagonal(distances, 0)  # Zero diagonal
 
         # Simulate projection
         projection = np.random.randn(n_sequences, 2)  # Mock calculation

@@ -170,42 +170,38 @@ class TestEmbeddingSaving:
 
         assert os.path.exists(output_path)
 
-        # Load and verify
+        # Load and verify - embeddings are stored in embeddings group
         with h5py.File(output_path, "r") as f:
+            embeddings_group = f["embeddings"]
             for seq_id, expected_embedding in sample_embeddings.items():
-                assert seq_id in f
-                loaded_embedding = f[seq_id]["embedding"][:]
+                # Safe ID conversion (same as in save_embeddings)
+                safe_id = seq_id.replace("/", "_").replace("\\", "_").replace("|", "_")
+                assert safe_id in embeddings_group
+                loaded_embedding = embeddings_group[safe_id][:]
                 np.testing.assert_array_equal(loaded_embedding, expected_embedding)
 
     def test_save_embeddings_invalid_format(self, sample_embeddings, temp_dir):
         """Test saving with invalid format."""
         output_path = os.path.join(temp_dir, "test_embeddings.invalid")
 
-        with pytest.raises(ValueError, match="Unsupported output format"):
+        with pytest.raises(ValueError, match="Unsupported format"):
             save_embeddings(sample_embeddings, output_path, "invalid")
 
 
 class TestModelInstantiation:
     """Test cases for model instantiation."""
 
-    @patch("generate_embeddings.importlib.import_module")
-    def test_load_model_class_success(self, mock_import):
+    def test_load_model_class_success(self):
         """Test successful model class loading."""
-        # Mock the model class
-        mock_model_class = Mock()
-        mock_model_instance = Mock()
-        mock_model_class.return_value = mock_model_instance
+        from models.base_model import BaseEmbeddingModel
 
-        # Mock the module
-        mock_module = Mock()
-        mock_module.ProstT5Model = mock_model_class
-        mock_import.return_value = mock_module
+        # Test with a real model class that exists
+        model_class = load_model_class("prost_t5")
 
-        # Mock the dir() function to return our model class
-        with patch("builtins.dir", return_value=["ProstT5Model"]):
-            model_class = load_model_class("prost_t5")
-
-        assert model_class == mock_model_class
+        # Verify it's a class and the correct type
+        assert isinstance(model_class, type)
+        assert issubclass(model_class, BaseEmbeddingModel)
+        assert model_class != BaseEmbeddingModel
 
     @patch("generate_embeddings.importlib.import_module")
     def test_load_model_class_import_error(self, mock_import):

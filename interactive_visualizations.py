@@ -47,11 +47,22 @@ def load_metadata(path_or_buffer):
         sep = "\t" if path_or_buffer.endswith(".tsv") else ","
         return pd.read_csv(path_or_buffer, sep=sep)
     else:
-        # Assume buffer
-        try:
-            return pd.read_csv(path_or_buffer, sep="\t")
-        except Exception:
-            return pd.read_csv(path_or_buffer, sep=",")
+        # Assume buffer - first try to determine if it's tab or comma separated
+        # by peeking at the first line
+        current_pos = path_or_buffer.tell()
+        first_line = path_or_buffer.readline()
+        path_or_buffer.seek(current_pos)
+
+        # Determine separator based on content
+        if "\t" in first_line and "," not in first_line:
+            sep = "\t"
+        elif "," in first_line:
+            sep = ","
+        else:
+            # Default to comma
+            sep = ","
+
+        return pd.read_csv(path_or_buffer, sep=sep)
 
 
 embeddings = load_embeddings(EMBEDDINGS_PATH)
@@ -82,16 +93,22 @@ except ImportError:
 
 def compute_projection(method, emb_array):
     if method == "UMAP":
-        reducer = umap.UMAP(random_state=42)
+        # Ensure n_neighbors is appropriate for small datasets
+        n_neighbors = min(15, len(emb_array) - 1) if len(emb_array) > 1 else 1
+        reducer = umap.UMAP(n_neighbors=n_neighbors, random_state=42)
         proj = reducer.fit_transform(emb_array)
     elif method == "PCA":
         reducer = PCA(n_components=2, random_state=42)
         proj = reducer.fit_transform(emb_array)
     elif method == "t-SNE":
-        reducer = TSNE(n_components=2, random_state=42)
+        # Ensure perplexity is appropriate for small datasets
+        perplexity = min(30, len(emb_array) - 1) if len(emb_array) > 1 else 1
+        reducer = TSNE(n_components=2, perplexity=perplexity, random_state=42)
         proj = reducer.fit_transform(emb_array)
     elif method == "PaCMAP" and PACMAP_AVAILABLE:
-        reducer = pacmap.PaCMAP(n_components=2, random_state=42)
+        # Ensure n_neighbors is appropriate for small datasets
+        n_neighbors = min(10, len(emb_array) - 1) if len(emb_array) > 1 else 1
+        reducer = pacmap.PaCMAP(n_components=2, n_neighbors=n_neighbors, random_state=42)
         proj = reducer.fit_transform(emb_array)
     else:
         raise ValueError(f"Projection method '{method}' not supported or pacmap not installed.")
