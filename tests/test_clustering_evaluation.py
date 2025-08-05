@@ -243,7 +243,7 @@ class TestClusteringEngine:
 
         for metric in expected_metrics:
             assert metric in metrics
-            assert isinstance(metrics[metric], (int, float))
+            assert isinstance(metrics[metric], (int, float, np.number))
 
     def test_evaluate_clustering_single_cluster(self, sample_embeddings):
         """Test clustering evaluation with single cluster."""
