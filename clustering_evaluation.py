@@ -253,7 +253,7 @@ class ClusteringEngine:
             if n_clusters is None:
                 n_clusters = 8
             # Validate ward linkage with euclidean metric
-            linkage = kwargs.get("linkage", "ward")
+            linkage = kwargs.get("linkage", "complete")
             metric = kwargs.get("metric", "euclidean")
             if linkage == "ward" and metric != "euclidean":
                 raise ValueError("Ward linkage requires euclidean metric")
@@ -1160,8 +1160,8 @@ def parse_arguments() -> ClusteringConfig:
     parser.add_argument(
         "--hierarchical-linkage",
         choices=["ward", "complete", "average", "single"],
-        default="ward",
-        help="Linkage criterion for hierarchical clustering (default: ward)",
+        default="complete",
+        help="Linkage criterion for hierarchical clustering (default: complete)",
     )
     parser.add_argument(
         "--hierarchical-metric",
@@ -1241,8 +1241,17 @@ def parse_arguments() -> ClusteringConfig:
 
     # Validate hierarchical clustering parameters
     if args.hierarchical_linkage == "ward" and args.hierarchical_metric != "euclidean":
-        print("Warning: Ward linkage only supports euclidean metric. Using euclidean metric.")
-        clustering_options["hierarchical"]["metric"] = "euclidean"
+        print("Warning: Ward linkage only supports euclidean metric.")
+        print(
+            f"You specified --hierarchical-metric {args.hierarchical_metric} with --hierarchical-linkage ward."
+        )
+        print(
+            "Please use --hierarchical-linkage complete (or average/single) with manhattan metric."
+        )
+        print("Or use --hierarchical-metric euclidean with ward linkage.")
+        raise ValueError(
+            "Invalid linkage-metric combination: ward linkage requires euclidean metric"
+        )
 
     return ClusteringConfig(
         embedding_files=args.embedding_files,

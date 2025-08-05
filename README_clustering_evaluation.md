@@ -7,7 +7,7 @@ A comprehensive tool for evaluating protein clustering based on embeddings. This
 The clustering evaluation script performs the following key tasks:
 
 1. **Load protein embeddings** from pickle files and metadata from TSV/CSV files
-2. **Perform clustering** using multiple algorithms (K-means, Hierarchical, DBSCAN)
+2. **Perform clustering** using multiple algorithms (K-means, Hierarchical, DBSCAN, HDBSCAN)
 3. **Optimize cluster numbers** automatically or use user-specified values
 4. **Evaluate clustering quality** using multiple metrics against ground truth labels
 5. **Generate comprehensive visualizations** and statistical reports
@@ -16,9 +16,10 @@ The clustering evaluation script performs the following key tasks:
 ## Features
 
 ### Clustering Methods
-- **K-means**: Efficient partitional clustering
-- **Hierarchical**: Agglomerative clustering with linkage options
+- **K-means**: Efficient partitional clustering with initialization options
+- **Hierarchical**: Agglomerative clustering with multiple linkage criteria (ward, complete, average, single) and distance metrics (euclidean, manhattan, cosine, etc.)
 - **DBSCAN**: Density-based clustering for discovering clusters of varying shapes
+- **HDBSCAN**: Hierarchical density-based clustering with noise detection and automatic parameter selection
 
 ### Evaluation Metrics
 - **Adjusted Rand Score**: Similarity measure corrected for chance
@@ -60,6 +61,7 @@ pip install -r requirements_clustering.txt
 ### Core Dependencies
 - `numpy`, `pandas`, `matplotlib`, `seaborn`
 - `scikit-learn`: Clustering algorithms and metrics
+- `hdbscan`: HDBSCAN clustering algorithm
 - `umap-learn`: UMAP dimensionality reduction
 - `statsmodels`: Statistical testing
 - `joblib`: Parallel processing
@@ -82,7 +84,7 @@ python clustering_evaluation.py embeddings1.pkl embeddings2.pkl metadata.tsv
 python clustering_evaluation.py \
     embeddings/*.pkl \
     metadata/protein_metadata.tsv \
-    --methods kmeans hierarchical dbscan \
+    --methods kmeans hierarchical dbscan hdbscan \
     --max-clusters 20 \
     --normalization-method standard \
     --output-dir results/
@@ -101,6 +103,34 @@ python clustering_evaluation.py embeddings.pkl metadata.tsv --normalization-meth
 
 # No normalization
 python clustering_evaluation.py embeddings.pkl metadata.tsv --normalization-method none
+```
+
+**Customize clustering algorithm parameters:**
+```bash
+# Hierarchical clustering with manhattan distance and complete linkage
+python clustering_evaluation.py embeddings.pkl metadata.tsv \
+    --methods hierarchical \
+    --hierarchical-metric manhattan \
+    --hierarchical-linkage complete
+
+# HDBSCAN with custom parameters
+python clustering_evaluation.py embeddings.pkl metadata.tsv \
+    --methods hdbscan \
+    --hdbscan-min-cluster-size 10 \
+    --hdbscan-min-samples 5 \
+    --hdbscan-cluster-selection-epsilon 0.1
+
+# DBSCAN with custom eps and min_samples
+python clustering_evaluation.py embeddings.pkl metadata.tsv \
+    --methods dbscan \
+    --dbscan-eps 0.3 \
+    --dbscan-min-samples 3
+
+# K-means with specific initialization and iterations
+python clustering_evaluation.py embeddings.pkl metadata.tsv \
+    --methods kmeans \
+    --kmeans-init random \
+    --kmeans-max-iter 500
 ```
 
 **Run subsampling analysis:**
@@ -135,13 +165,42 @@ python clustering_evaluation.py \
 | `--output-dir`, `-o` | `clustering_results` | Output directory for results |
 | `--id-column` | `uniprot_id` | Column name for protein IDs in metadata |
 | `--label-column` | `Family.name` | Column name for true labels in metadata |
-| `--methods` | `kmeans hierarchical` | Clustering methods to use |
+| `--methods` | `kmeans hierarchical` | Clustering methods: kmeans, hierarchical, dbscan, hdbscan |
 | `--n-clusters` | Auto-optimize | Number of clusters (fixed) |
 | `--max-clusters` | `15` | Maximum clusters for optimization |
 | `--normalization-method` | `l2` | Normalization method: standard, l2, pca, zca, none |
 | `--subsample` | `0` | Number of subsampling runs |
 | `--subsample-fraction` | `0.8` | Fraction of proteins per subsample |
 | `--stratified-subsample` | `False` | Use stratified subsampling |
+
+### Clustering Algorithm Parameters
+
+#### K-means Parameters
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--kmeans-init` | `k-means++` | Initialization method: k-means++, random |
+| `--kmeans-max-iter` | `300` | Maximum number of iterations |
+
+#### Hierarchical Clustering Parameters
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--hierarchical-linkage` | `complete` | Linkage criterion: ward, complete, average, single |
+| `--hierarchical-metric` | `euclidean` | Distance metric: euclidean, manhattan, cosine, l1, l2 |
+
+**Note:** Ward linkage only supports euclidean metric. For other metrics like manhattan, use complete, average, or single linkage.
+
+#### DBSCAN Parameters
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--dbscan-eps` | `0.5` | Maximum distance between samples in a neighborhood |
+| `--dbscan-min-samples` | `5` | Minimum samples in a neighborhood for core point |
+
+#### HDBSCAN Parameters
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--hdbscan-min-cluster-size` | `5` | Minimum size of clusters |
+| `--hdbscan-min-samples` | `None` | Minimum samples for core points (None uses min_cluster_size) |
+| `--hdbscan-cluster-selection-epsilon` | `0.0` | Distance threshold for cluster selection |
 
 ## Input File Formats
 
@@ -243,10 +302,17 @@ The script generates several output files in the specified directory:
 - Try different normalization methods: `--normalization-method standard` or `--normalization-method pca`
 
 **Poor clustering results:**
-- Try different clustering methods: `--methods kmeans hierarchical dbscan`
+- Try different clustering methods: `--methods kmeans hierarchical dbscan hdbscan`
 - Experiment with normalization: `--normalization-method standard` or `--normalization-method none`
 - Adjust cluster count range: `--max-clusters 25`
+- For hierarchical clustering with non-euclidean metrics, use `--hierarchical-linkage complete`
+- For HDBSCAN, try adjusting `--hdbscan-min-cluster-size` based on expected cluster sizes
 - Check if true labels are meaningful for clustering
+
+**Parameter compatibility issues:**
+- Ward linkage only works with euclidean metric. Use `--hierarchical-linkage complete` with `--hierarchical-metric manhattan`
+- HDBSCAN parameters: `min_samples` defaults to `min_cluster_size` if not specified
+- DBSCAN may produce many noise points (-1 labels) with default parameters - adjust `eps` and `min_samples`
 
 **Visualization errors:**
 - Ensure matplotlib backend is properly configured
@@ -261,9 +327,15 @@ The script generates several output files in the specified directory:
 ## Technical Details
 
 ### Algorithm Implementation
-- **K-means**: Uses scikit-learn's KMeans with k-means++ initialization
-- **Hierarchical**: Agglomerative clustering with Ward linkage
-- **DBSCAN**: Automatic parameter selection based on data characteristics
+- **K-means**: Uses scikit-learn's KMeans with configurable initialization (k-means++, random) and iteration limits
+- **Hierarchical**: Agglomerative clustering with configurable linkage (ward, complete, average, single) and distance metrics (euclidean, manhattan, cosine, etc.)
+- **DBSCAN**: Density-based clustering with configurable eps and min_samples parameters
+- **HDBSCAN**: Hierarchical density-based clustering with automatic parameter selection and noise detection
+
+### Parameter Validation
+- Ward linkage automatically validates euclidean metric requirement
+- HDBSCAN parameters are validated for logical consistency
+- All clustering methods include proper error handling for edge cases
 
 ### Statistical Testing
 - Paired t-tests for normally distributed metrics
@@ -274,6 +346,21 @@ The script generates several output files in the specified directory:
 - Streaming data processing for large embedding files
 - Efficient numpy operations for metric calculations
 - Optional garbage collection for memory-constrained environments
+
+## Recent Updates
+
+### Version Improvements
+- **HDBSCAN Support**: Added hierarchical density-based clustering with noise detection
+- **Enhanced Hierarchical Clustering**: Support for multiple linkage criteria and distance metrics
+- **Parameter Validation**: Improved error handling and parameter compatibility checking
+- **Better Defaults**: Changed default hierarchical linkage from 'ward' to 'complete' for better metric compatibility
+- **Warning Management**: Suppressed deprecation warnings from external libraries
+
+### New Features
+- Complete parameter customization for all clustering algorithms
+- Automatic validation of incompatible parameter combinations
+- Enhanced documentation and error messages
+- Support for manhattan, cosine, and other distance metrics in hierarchical clustering
 
 ## Citation
 
