@@ -216,7 +216,29 @@ class ClusteringEngine:
 
         print(f"Finding optimal number of clusters for {method}...")
 
-        cluster_range = range(2, min(max_clusters + 1, len(embeddings)))
+        # Ensure we have a valid range for clustering
+        max_possible_clusters = min(max_clusters + 1, len(embeddings))
+        if max_possible_clusters <= 2:
+            print(
+                f"Warning: Not enough data points ({len(embeddings)}) for optimization. Using 2 clusters."
+            )
+            best_k = {
+                "silhouette": 2,
+                "calinski_harabasz": 2,
+                "davies_bouldin": 2,
+                "adjusted_rand": 2,
+                "v_measure": 2,
+            }
+            metrics_by_k = {
+                2: self.evaluate_clustering(
+                    self.perform_clustering(embeddings, method=method, n_clusters=2),
+                    true_labels,
+                    embeddings,
+                )
+            }
+            return best_k, metrics_by_k
+
+        cluster_range = range(2, max_possible_clusters)
         metrics_by_k = {}
 
         for k in cluster_range:
@@ -251,25 +273,96 @@ class Visualizer:
         output_path: str,
         title: str = "Clustering Truth Table",
     ):
-        """Plot confusion matrix (truth table) between true labels and cluster assignments, sorted for maximal diagonal."""
+        """Plot confusion matrix (truth table) with true labels as rows and cluster labels as columns."""
         from scipy.optimize import linear_sum_assignment
         from sklearn.metrics import confusion_matrix
 
-        cm = confusion_matrix(true_labels, cluster_labels)
-        # Use Hungarian algorithm to maximize diagonal
-        row_ind, col_ind = linear_sum_assignment(-cm)
-        cm_sorted = cm[row_ind][:, col_ind]
-        # Use actual unique true labels present in filtered data
+        # Get unique labels and clusters that actually exist in the data
         unique_true_labels = np.unique(true_labels)
-        sorted_true_labels = [
-            label_names[i] if i < len(label_names) else f"Label {i}" for i in row_ind
-        ]
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(cm_sorted, annot=True, fmt="d", cmap="Blues")
+        unique_cluster_labels = np.unique(cluster_labels)
+
+        # Create confusion matrix with explicit labels for both rows and columns
+        # This ensures we get the right dimensions: true_labels x cluster_labels
+        cm_correct = np.zeros((len(unique_true_labels), len(unique_cluster_labels)), dtype=int)
+
+        # Fill the correct confusion matrix
+        for i, true_label in enumerate(unique_true_labels):
+            for j, cluster_label in enumerate(unique_cluster_labels):
+                # Count how many samples have this true_label and cluster_label combination
+                count = np.sum((true_labels == true_label) & (cluster_labels == cluster_label))
+                cm_correct[i, j] = count
+
+        # Sort rows and columns to maximize diagonal values using Hungarian algorithm
+        # For rectangular matrices, we need to handle this carefully
+        min_dim = min(cm_correct.shape[0], cm_correct.shape[1])
+
+        if min_dim > 1:
+            # Create a square matrix for the Hungarian algorithm by taking the top-left submatrix
+            # or padding if needed
+            if cm_correct.shape[0] == cm_correct.shape[1]:
+                # Square matrix - use directly
+                cost_matrix = -cm_correct  # Negative because we want to maximize
+                row_indices, col_indices = linear_sum_assignment(cost_matrix)
+            elif cm_correct.shape[0] < cm_correct.shape[1]:
+                # More clusters than true labels - optimize for all true labels
+                cost_matrix = -cm_correct
+                row_indices, col_indices = linear_sum_assignment(cost_matrix)
+                # Keep remaining cluster columns in original order
+                remaining_cols = [i for i in range(cm_correct.shape[1]) if i not in col_indices]
+                col_indices = np.concatenate([col_indices, remaining_cols])
+                row_indices = np.concatenate(
+                    [row_indices, np.arange(len(row_indices), cm_correct.shape[0])]
+                )
+            else:
+                # More true labels than clusters - optimize for all clusters
+                cost_matrix = -cm_correct.T  # Transpose for assignment
+                col_indices, row_indices = linear_sum_assignment(cost_matrix)
+                # Keep remaining row labels in original order
+                remaining_rows = [i for i in range(cm_correct.shape[0]) if i not in row_indices]
+                row_indices = np.concatenate([row_indices, remaining_rows])
+                col_indices = np.concatenate(
+                    [col_indices, np.arange(len(col_indices), cm_correct.shape[1])]
+                )
+
+            # Reorder the matrix
+            cm_sorted = cm_correct[np.ix_(row_indices, col_indices)]
+
+            # Reorder labels accordingly
+            sorted_true_labels = [unique_true_labels[i] for i in row_indices]
+            sorted_cluster_labels = [unique_cluster_labels[i] for i in col_indices]
+        else:
+            # No sorting possible with single row/column
+            cm_sorted = cm_correct
+            sorted_true_labels = unique_true_labels
+            sorted_cluster_labels = unique_cluster_labels
+
+        # Create row labels (true labels) - map indices to actual label names
+        row_labels = []
+        for label_idx in sorted_true_labels:
+            if label_idx < len(label_names):
+                row_labels.append(label_names[label_idx])
+            else:
+                row_labels.append(f"Label {label_idx}")
+
+        # Create column labels (cluster labels)
+        col_labels = [f"Cluster {c}" for c in sorted_cluster_labels]
+
+        # Determine figure size based on matrix dimensions
+        fig_width = max(8, 2 + len(col_labels) * 0.8)
+        fig_height = max(6, 2 + len(row_labels) * 0.5)
+
+        plt.figure(figsize=(fig_width, fig_height))
+        sns.heatmap(
+            cm_sorted,
+            annot=True,
+            fmt="d",
+            cmap="Blues",
+            xticklabels=col_labels,
+            yticklabels=row_labels,
+        )
         plt.xlabel("Cluster Label (sorted)")
         plt.ylabel("True Label (sorted)")
         plt.title(title + " (sorted)")
-        plt.yticks(np.arange(len(sorted_true_labels)) + 0.5, sorted_true_labels, rotation=0)
         plt.tight_layout()
         plt.savefig(output_path, format="pdf", bbox_inches="tight")
         plt.close()
@@ -346,30 +439,35 @@ class Visualizer:
                 bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
             )
 
-        plt.tight_layout()
         plt.savefig(output_path, format="pdf", bbox_inches="tight")
         plt.close()
 
     def plot_significance_heatmap(
         self, significance_file: str, output_dir: str, title: str = "Embedding Significance"
     ):
-        """Plot significance heatmaps."""
-        if not os.path.exists(significance_file):
-            print(f"Warning: {significance_file} not found. Skipping heatmap plot.")
+        """Plot significance heatmaps from statistical test results."""
+        try:
+            df = pd.read_csv(significance_file, sep="\t")
+        except Exception as e:
+            print(f"Warning: Could not read significance file {significance_file}: {e}")
             return
 
-        df = pd.read_csv(significance_file, sep="\t")
-        df["diff"] = df["embedding1_mean"] - df["embedding2_mean"]
-
-        # Determine which p-value column to use
+        # Find corrected p-value column
         pval_col = None
-        for col in ["t_p_holm", "wilcoxon_p_holm"]:
-            if col in df.columns:
+        for col in df.columns:
+            if "holm" in col.lower() or "corrected" in col.lower():
                 pval_col = col
                 break
 
         if pval_col is None:
             print(f"Warning: No corrected p-value column found in {significance_file}")
+            return
+
+        # Calculate mean differences for heatmap values
+        if "embedding1_mean" in df.columns and "embedding2_mean" in df.columns:
+            df["diff"] = df["embedding1_mean"] - df["embedding2_mean"]
+        else:
+            print(f"Warning: Mean columns not found in {significance_file}")
             return
 
         # Create heatmaps for each metric and method
@@ -379,21 +477,25 @@ class Visualizer:
                 if sub.empty:
                     continue
 
-                matrix = sub.pivot(index="embedding1", columns="embedding2", values="diff")
-                pvals = sub.pivot(index="embedding1", columns="embedding2", values=pval_col)
+                try:
+                    matrix = sub.pivot(index="embedding1", columns="embedding2", values="diff")
+                    pvals = sub.pivot(index="embedding1", columns="embedding2", values=pval_col)
 
-                plt.figure(figsize=(10, 8))
-                sns.heatmap(matrix, annot=pvals.round(3), fmt="", cmap="coolwarm", center=0)
-                plt.title(f"{title}: {metric} ({method})")
-                plt.xlabel("Embedding 2")
-                plt.ylabel("Embedding 1")
-                plt.xticks(rotation=45, ha="right")
-                plt.yticks(rotation=0)
-                plt.tight_layout()
+                    plt.figure(figsize=(10, 8))
+                    sns.heatmap(matrix, annot=pvals.round(3), fmt="", cmap="coolwarm", center=0)
+                    plt.title(f"{title}: {metric} ({method})")
+                    plt.xlabel("Embedding 2")
+                    plt.ylabel("Embedding 1")
+                    plt.xticks(rotation=45, ha="right")
+                    plt.yticks(rotation=0)
+                    plt.tight_layout()
 
-                fname = f"embedding_significance_heatmap_{metric}_{method}.pdf"
-                plt.savefig(os.path.join(output_dir, fname))
-                plt.close()
+                    fname = f"embedding_significance_heatmap_{metric}_{method}.pdf"
+                    plt.savefig(os.path.join(output_dir, fname))
+                    plt.close()
+                except Exception as e:
+                    print(f"Warning: Could not create heatmap for {metric}/{method}: {e}")
+                    continue
 
 
 class SubsamplingAnalyzer:
@@ -421,6 +523,8 @@ class SubsamplingAnalyzer:
             split = next(sss.split(indices, true_labels))
             sampled_idx = sorted(split[1])  # test indices
         else:
+            # Set random seed for reproducibility
+            random.seed(run_idx)
             sampled_idx = sorted(
                 random.sample(
                     range(len(protein_ids)), int(len(protein_ids) * self.config.subsample_fraction)
