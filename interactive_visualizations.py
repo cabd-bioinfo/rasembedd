@@ -270,24 +270,24 @@ except ImportError:
     PACMAP_AVAILABLE = False
 
 
-def compute_projection(method, emb_array):
+def compute_projection(method, emb_array, n_components=2):
     if method == "UMAP":
         # Ensure n_neighbors is appropriate for small datasets
         n_neighbors = min(15, len(emb_array) - 1) if len(emb_array) > 1 else 1
-        reducer = umap.UMAP(n_neighbors=n_neighbors, random_state=42)
+        reducer = umap.UMAP(n_neighbors=n_neighbors, n_components=n_components, random_state=42)
         proj = reducer.fit_transform(emb_array)
     elif method == "PCA":
-        reducer = PCA(n_components=2, random_state=42)
+        reducer = PCA(n_components=n_components, random_state=42)
         proj = reducer.fit_transform(emb_array)
     elif method == "t-SNE":
         # Ensure perplexity is appropriate for small datasets
         perplexity = min(30, len(emb_array) - 1) if len(emb_array) > 1 else 1
-        reducer = TSNE(n_components=2, perplexity=perplexity, random_state=42)
+        reducer = TSNE(n_components=n_components, perplexity=perplexity, random_state=42)
         proj = reducer.fit_transform(emb_array)
     elif method == "PaCMAP" and PACMAP_AVAILABLE:
         # Ensure n_neighbors is appropriate for small datasets
         n_neighbors = min(10, len(emb_array) - 1) if len(emb_array) > 1 else 1
-        reducer = pacmap.PaCMAP(n_components=2, n_neighbors=n_neighbors, random_state=42)
+        reducer = pacmap.PaCMAP(n_components=n_components, n_neighbors=n_neighbors, random_state=42)
         proj = reducer.fit_transform(emb_array)
     else:
         raise ValueError(f"Projection method '{method}' not supported or pacmap not installed.")
@@ -296,7 +296,7 @@ def compute_projection(method, emb_array):
 
 # Default projection
 DEFAULT_PROJECTION = "UMAP"
-proj = compute_projection(DEFAULT_PROJECTION, emb_array)
+proj = compute_projection(DEFAULT_PROJECTION, emb_array, n_components=2)
 df["X"] = proj[:, 0]
 df["Y"] = proj[:, 1]
 
@@ -344,6 +344,16 @@ app.layout = html.Div(
                                 + (["PaCMAP"] if PACMAP_AVAILABLE else [])
                             ],
                             value=DEFAULT_PROJECTION,
+                            clearable=False,
+                        ),
+                        html.Label("Dimensions:"),
+                        dcc.Dropdown(
+                            id="projection-dimensions",
+                            options=[
+                                {"label": "2D", "value": 2},
+                                {"label": "3D", "value": 3},
+                            ],
+                            value=2,
                             clearable=False,
                         ),
                         html.Label("Classification column:"),
@@ -684,6 +694,7 @@ def get_current_metadata():
     Output("projection-plot", "figure"),
     [
         Input("projection-method", "value"),
+        Input("projection-dimensions", "value"),
         Input("color-column", "value"),
         Input("species-filter", "value"),
         Input("embeddings-dropdown", "value"),
@@ -693,6 +704,7 @@ def get_current_metadata():
 )
 def update_plot(
     proj_method,
+    n_dimensions,
     color_col,
     species_filter,
     emb_file,
@@ -759,9 +771,11 @@ def update_plot(
 
         # Attempt projection
         try:
-            proj = compute_projection(proj_method, emb_array)
+            proj = compute_projection(proj_method, emb_array, n_components=n_dimensions)
             dff["X"] = proj[:, 0]
             dff["Y"] = proj[:, 1]
+            if n_dimensions == 3:
+                dff["Z"] = proj[:, 2]
         except Exception as e:
             fig = px.scatter(x=[], y=[])
             fig.update_layout(title=f"❌ {proj_method} projection failed: {str(e)}")
@@ -781,62 +795,99 @@ def update_plot(
                 return fig
 
         # Create the plot
-        fig = px.scatter(
-            dff,
-            x="X",
-            y="Y",
-            color=color_col,
-            hover_data=[ID_COLUMN, species_column] if species_column else [ID_COLUMN],
-            title=f"{proj_method} Projection of {len(dff)} proteins colored by {color_col}",
-            symbol=species_column if species_column else None,
-        )
+        if n_dimensions == 3:
+            fig = px.scatter_3d(
+                dff,
+                x="X",
+                y="Y",
+                z="Z",
+                color=color_col,
+                hover_data=[ID_COLUMN, species_column] if species_column else [ID_COLUMN],
+                title=f"{proj_method} 3D Projection of {len(dff)} proteins colored by {color_col}",
+                symbol=species_column if species_column else None,
+            )
+        else:
+            fig = px.scatter(
+                dff,
+                x="X",
+                y="Y",
+                color=color_col,
+                hover_data=[ID_COLUMN, species_column] if species_column else [ID_COLUMN],
+                title=f"{proj_method} 2D Projection of {len(dff)} proteins colored by {color_col}",
+                symbol=species_column if species_column else None,
+            )
 
         # Style the plot
-        fig.update_traces(marker=dict(size=10, line=dict(width=0.5, color="black")))
-        fig.update_layout(
-            legend_title=color_col,
-            autosize=True,
-            margin=dict(l=20, r=20, t=40, b=20),
-            xaxis=dict(
-                scaleanchor="y",
-                scaleratio=1,
-                showline=True,
-                linewidth=2,
-                linecolor="black",
-                showgrid=True,
-                gridcolor="lightgray",
-                gridwidth=0.5,
-                zeroline=False,
-                title=f"{proj_method} 1",
-            ),
-            yaxis=dict(
-                showline=True,
-                linewidth=2,
-                linecolor="black",
-                showgrid=True,
-                gridcolor="lightgray",
-                gridwidth=0.5,
-                zeroline=False,
-                title=f"{proj_method} 2",
-            ),
-            width=None,
-            height=None,
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)",
-            shapes=[
-                dict(
-                    type="rect",
-                    xref="paper",
-                    yref="paper",
-                    x0=0,
-                    y0=0,
-                    x1=1,
-                    y1=1,
-                    line=dict(color="black", width=2),
-                    fillcolor="rgba(0,0,0,0)",
-                )
-            ],
-        )
+        if n_dimensions == 3:
+            # Smaller markers for 3D visualization
+            fig.update_traces(marker=dict(size=6, line=dict(width=0.3, color="black")))
+        else:
+            # Standard size for 2D visualization
+            fig.update_traces(marker=dict(size=10, line=dict(width=0.5, color="black")))
+
+        if n_dimensions == 3:
+            # 3D plot styling
+            fig.update_layout(
+                legend_title=color_col,
+                autosize=True,
+                margin=dict(l=20, r=20, t=40, b=20),
+                scene=dict(
+                    xaxis_title=f"{proj_method} 1",
+                    yaxis_title=f"{proj_method} 2",
+                    zaxis_title=f"{proj_method} 3",
+                    camera=dict(eye=dict(x=1.5, y=1.5, z=1.5)),
+                ),
+                width=None,
+                height=None,
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
+        else:
+            # 2D plot styling
+            fig.update_layout(
+                legend_title=color_col,
+                autosize=True,
+                margin=dict(l=20, r=20, t=40, b=20),
+                xaxis=dict(
+                    scaleanchor="y",
+                    scaleratio=1,
+                    showline=True,
+                    linewidth=2,
+                    linecolor="black",
+                    showgrid=True,
+                    gridcolor="lightgray",
+                    gridwidth=0.5,
+                    zeroline=False,
+                    title=f"{proj_method} 1",
+                ),
+                yaxis=dict(
+                    showline=True,
+                    linewidth=2,
+                    linecolor="black",
+                    showgrid=True,
+                    gridcolor="lightgray",
+                    gridwidth=0.5,
+                    zeroline=False,
+                    title=f"{proj_method} 2",
+                ),
+                width=None,
+                height=None,
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                shapes=[
+                    dict(
+                        type="rect",
+                        xref="paper",
+                        yref="paper",
+                        x0=0,
+                        y0=0,
+                        x1=1,
+                        y1=1,
+                        line=dict(color="black", width=2),
+                        fillcolor="rgba(0,0,0,0)",
+                    )
+                ],
+            )
         return fig
 
     except Exception as e:
