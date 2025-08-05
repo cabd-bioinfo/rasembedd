@@ -40,7 +40,14 @@ The clustering evaluation script performs the following key tasks:
 - **Subsampling analysis**: Tests robustness across multiple random samples
 - **Statistical testing**: Compares different embedding methods with significance tests
 - **Stratified subsampling**: Maintains class proportions in samples
-- **Embedding normalization**: Optional standardization of embeddings
+- **Multiple normalization methods**: Standard, L2, PCA whitening, ZCA whitening, or none
+
+### Normalization Methods
+- **Standard (Z-score)**: Centers features to mean=0, scales to std=1
+- **L2**: Normalizes each sample to unit norm (magnitude=1) - **default**
+- **PCA Whitening**: Decorrelates features and scales to unit variance
+- **ZCA Whitening**: Decorrelates while preserving original feature relationships
+- **None**: No normalization applied
 
 ## Requirements
 
@@ -77,8 +84,23 @@ python clustering_evaluation.py \
     metadata/protein_metadata.tsv \
     --methods kmeans hierarchical dbscan \
     --max-clusters 20 \
-    --normalize \
+    --normalization-method standard \
     --output-dir results/
+```
+
+**Use different normalization methods:**
+```bash
+# Standard normalization (z-score)
+python clustering_evaluation.py embeddings.pkl metadata.tsv --normalization-method standard
+
+# L2 normalization (unit norm)
+python clustering_evaluation.py embeddings.pkl metadata.tsv --normalization-method l2
+
+# PCA whitening
+python clustering_evaluation.py embeddings.pkl metadata.tsv --normalization-method pca
+
+# No normalization
+python clustering_evaluation.py embeddings.pkl metadata.tsv --normalization-method none
 ```
 
 **Run subsampling analysis:**
@@ -116,7 +138,7 @@ python clustering_evaluation.py \
 | `--methods` | `kmeans hierarchical` | Clustering methods to use |
 | `--n-clusters` | Auto-optimize | Number of clusters (fixed) |
 | `--max-clusters` | `15` | Maximum clusters for optimization |
-| `--normalize` | `False` | Normalize embeddings before clustering |
+| `--normalization-method` | `l2` | Normalization method: standard, l2, pca, zca, none |
 | `--subsample` | `0` | Number of subsampling runs |
 | `--subsample-fraction` | `0.8` | Fraction of proteins per subsample |
 | `--stratified-subsample` | `False` | Use stratified subsampling |
@@ -218,10 +240,11 @@ The script generates several output files in the specified directory:
 
 **Memory issues with large datasets:**
 - Use subsampling: `--subsample 50 --subsample-fraction 0.5`
-- Consider normalizing embeddings: `--normalize`
+- Try different normalization methods: `--normalization-method standard` or `--normalization-method pca`
 
 **Poor clustering results:**
 - Try different clustering methods: `--methods kmeans hierarchical dbscan`
+- Experiment with normalization: `--normalization-method standard` or `--normalization-method none`
 - Adjust cluster count range: `--max-clusters 25`
 - Check if true labels are meaningful for clustering
 
@@ -231,7 +254,7 @@ The script generates several output files in the specified directory:
 
 ### Performance Tips
 - Use subsampling for large datasets (>10,000 proteins)
-- Enable normalization for embeddings with different scales
+- Choose appropriate normalization: `l2` (default) for most embeddings, `standard` for mixed scales, `none` for pre-normalized data
 - Use stratified subsampling to maintain class balance
 - Consider parallel processing for multiple embedding comparisons
 

@@ -36,7 +36,7 @@ from sklearn.metrics import (
     v_measure_score,
 )
 from sklearn.model_selection import StratifiedShuffleSplit
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, normalize
 from statsmodels.stats.multitest import multipletests
 
 # Try to import colorcet for better color palettes
@@ -61,7 +61,7 @@ class ClusteringConfig:
     methods: List[str] = None
     n_clusters: Optional[int] = None
     max_clusters: int = 15
-    normalize: bool = False
+    normalization_method: str = "l2"
     subsample: int = 0
     subsample_fraction: float = 0.8
     stratified_subsample: bool = False
@@ -139,6 +139,88 @@ class DataLoader:
         aligned_metadata = aligned_metadata.set_index(id_column).loc[common_ids].reset_index()
 
         return embedding_matrix, aligned_metadata, common_ids
+
+
+class EmbeddingNormalizer:
+    """Handles different normalization methods for embeddings."""
+
+    @staticmethod
+    def normalize_embeddings(embeddings: np.ndarray, method: str = "standard") -> np.ndarray:
+        """Apply normalization to embeddings using the specified method.
+
+        Args:
+            embeddings: Input embeddings of shape (n_samples, n_features)
+            method: Normalization method ("standard", "l2", "pca", "zca", "none")
+
+        Returns:
+            Normalized embeddings of the same shape
+        """
+        if method == "none" or not method:
+            return embeddings
+
+        if method == "standard":
+            return EmbeddingNormalizer._standard_normalization(embeddings)
+        elif method == "l2":
+            return EmbeddingNormalizer._l2_normalization(embeddings)
+        elif method == "pca":
+            return EmbeddingNormalizer._pca_whitening(embeddings)
+        elif method == "zca":
+            return EmbeddingNormalizer._zca_whitening(embeddings)
+        else:
+            available_methods = ["standard", "l2", "pca", "zca", "none"]
+            raise ValueError(
+                f"Unknown normalization method '{method}'. Available methods: {available_methods}"
+            )
+
+    @staticmethod
+    def _standard_normalization(embeddings: np.ndarray) -> np.ndarray:
+        """Standard normalization (z-score): mean=0, std=1 for each feature."""
+        scaler = StandardScaler()
+        return scaler.fit_transform(embeddings)
+
+    @staticmethod
+    def _l2_normalization(embeddings: np.ndarray) -> np.ndarray:
+        """L2 normalization: each sample has unit norm."""
+        return normalize(embeddings, norm="l2", axis=1)
+
+    @staticmethod
+    def _pca_whitening(embeddings: np.ndarray) -> np.ndarray:
+        """PCA whitening: decorrelate features and scale to unit variance."""
+        # Center the data
+        mean = np.mean(embeddings, axis=0)
+        centered = embeddings - mean
+
+        # Compute PCA
+        pca = PCA(whiten=True)
+        whitened = pca.fit_transform(centered)
+
+        return whitened
+
+    @staticmethod
+    def _zca_whitening(embeddings: np.ndarray, epsilon: float = 1e-5) -> np.ndarray:
+        """ZCA whitening: decorrelate features while preserving original space structure."""
+        # Center the data
+        mean = np.mean(embeddings, axis=0)
+        centered = embeddings - mean
+
+        # Compute covariance matrix
+        cov = np.cov(centered.T)
+
+        # Compute eigendecomposition
+        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+
+        # Add small epsilon to prevent division by zero
+        eigenvalues = eigenvalues + epsilon
+
+        # Compute ZCA whitening matrix
+        # ZCA = V * D^(-1/2) * V^T where V is eigenvectors, D is eigenvalues
+        sqrt_inv_eigenvalues = np.diag(1.0 / np.sqrt(eigenvalues))
+        whitening_matrix = eigenvectors @ sqrt_inv_eigenvalues @ eigenvectors.T
+
+        # Apply whitening
+        whitened = centered @ whitening_matrix.T
+
+        return whitened
 
 
 class ClusteringEngine:
@@ -538,9 +620,10 @@ class SubsamplingAnalyzer:
         for emb_name, embeddings in embeddings_dict.items():
             emb_matrix = np.array([embeddings[pid] for pid in sampled_ids if pid in embeddings])
 
-            if self.config.normalize:
-                scaler = StandardScaler()
-                emb_matrix = scaler.fit_transform(emb_matrix)
+            if self.config.normalization_method != "none":
+                emb_matrix = EmbeddingNormalizer.normalize_embeddings(
+                    emb_matrix, self.config.normalization_method
+                )
 
             for method in self.config.methods:
                 if self.config.n_clusters:
@@ -805,10 +888,12 @@ class ClusteringAnalyzer:
             print(f"Proteins after filtering: {len(protein_ids)}")
             print(f"Embedding dimensions: {embedding_matrix.shape}")
 
-            # Normalize if requested
-            if self.config.normalize:
-                scaler = StandardScaler()
-                embedding_matrix = scaler.fit_transform(embedding_matrix)
+            # Apply normalization if specified
+            if self.config.normalization_method != "none":
+                print(f"Applying {self.config.normalization_method} normalization...")
+                embedding_matrix = EmbeddingNormalizer.normalize_embeddings(
+                    embedding_matrix, self.config.normalization_method
+                )
 
             # Run clustering for each method
             results = {}
@@ -1005,7 +1090,10 @@ def parse_arguments() -> ClusteringConfig:
         help="Maximum number of clusters to test during optimization",
     )
     parser.add_argument(
-        "--normalize", action="store_true", help="Normalize embeddings before clustering"
+        "--normalization-method",
+        choices=["standard", "l2", "pca", "zca", "none"],
+        default="l2",
+        help="Normalization method to use (default: l2)",
     )
     parser.add_argument(
         "--subsample", type=int, default=0, help="Number of subsampling runs (0 to disable)"
@@ -1033,7 +1121,7 @@ def parse_arguments() -> ClusteringConfig:
         methods=args.methods,
         n_clusters=args.n_clusters,
         max_clusters=args.max_clusters,
-        normalize=args.normalize,
+        normalization_method=args.normalization_method,
         subsample=args.subsample,
         subsample_fraction=args.subsample_fraction,
         stratified_subsample=args.stratified_subsample,

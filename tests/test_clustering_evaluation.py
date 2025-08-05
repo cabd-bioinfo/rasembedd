@@ -16,6 +16,7 @@ from clustering_evaluation import (
     ClusteringEngine,
     ClusteringResult,
     DataLoader,
+    EmbeddingNormalizer,
     SubsamplingAnalyzer,
     Visualizer,
 )
@@ -86,7 +87,7 @@ class TestClusteringConfig:
         assert config.methods == ["kmeans", "hierarchical"]
         assert config.n_clusters is None
         assert config.max_clusters == 15
-        assert config.normalize is False
+        assert config.normalization_method == "l2"
         assert config.subsample == 0
         assert config.subsample_fraction == 0.8
         assert config.stratified_subsample is False
@@ -794,3 +795,295 @@ class TestEdgeCases:
         except Exception:
             # It's acceptable to fail on malformed data
             pass
+
+
+class TestEmbeddingNormalizer:
+    """Test cases for embedding normalization methods."""
+
+    @pytest.fixture
+    def sample_data(self):
+        """Create sample embedding data for normalization testing."""
+        np.random.seed(42)
+        # Create data with known properties for testing
+        n_samples, n_features = 20, 10
+        data = np.random.randn(n_samples, n_features)
+        # Add some structure to make tests more meaningful
+        data[:5, :] *= 2  # First group has larger variance
+        data[5:10, :] += 1  # Second group has different mean
+        return data
+
+    def test_none_normalization(self, sample_data):
+        """Test that 'none' normalization returns unchanged data."""
+        result = EmbeddingNormalizer.normalize_embeddings(sample_data, "none")
+        np.testing.assert_array_equal(result, sample_data)
+
+        # Also test with empty string
+        result_empty = EmbeddingNormalizer.normalize_embeddings(sample_data, "")
+        np.testing.assert_array_equal(result_empty, sample_data)
+
+    def test_standard_normalization(self, sample_data):
+        """Test standard (z-score) normalization."""
+        result = EmbeddingNormalizer.normalize_embeddings(sample_data, "standard")
+
+        # Check output shape
+        assert result.shape == sample_data.shape
+
+        # Check that each feature has approximately zero mean and unit variance
+        feature_means = np.mean(result, axis=0)
+        feature_stds = np.std(result, axis=0)
+
+        np.testing.assert_allclose(feature_means, 0, atol=1e-10)
+        np.testing.assert_allclose(feature_stds, 1, atol=1e-10)
+
+        # Check that data type is preserved
+        assert result.dtype == sample_data.dtype
+
+    def test_l2_normalization(self, sample_data):
+        """Test L2 normalization."""
+        result = EmbeddingNormalizer.normalize_embeddings(sample_data, "l2")
+
+        # Check output shape
+        assert result.shape == sample_data.shape
+
+        # Check that each sample has unit norm
+        sample_norms = np.linalg.norm(result, axis=1)
+        np.testing.assert_allclose(sample_norms, 1, atol=1e-10)
+
+        # Check that zero vector is handled (if any)
+        zero_vector = np.zeros((1, sample_data.shape[1]))
+        result_zero = EmbeddingNormalizer.normalize_embeddings(zero_vector, "l2")
+        assert not np.isnan(result_zero).any()
+
+    def test_pca_whitening(self, sample_data):
+        """Test PCA whitening normalization."""
+        # Skip if too few samples
+        if sample_data.shape[0] < sample_data.shape[1]:
+            pytest.skip("Not enough samples for PCA whitening")
+
+        result = EmbeddingNormalizer.normalize_embeddings(sample_data, "pca")
+
+        # Check output shape
+        assert result.shape == sample_data.shape
+
+        # Check that covariance matrix is approximately identity
+        cov_matrix = np.cov(result.T)
+        identity = np.eye(cov_matrix.shape[0])
+
+        # Check diagonal is approximately 1
+        np.testing.assert_allclose(np.diag(cov_matrix), 1, atol=1e-2)
+
+        # Check off-diagonal elements are approximately 0
+        off_diagonal = cov_matrix - np.diag(np.diag(cov_matrix))
+        assert np.max(np.abs(off_diagonal)) < 1e-10
+
+    def test_zca_whitening(self, sample_data):
+        """Test ZCA whitening normalization."""
+        # Skip if too few samples
+        if sample_data.shape[0] < sample_data.shape[1]:
+            pytest.skip("Not enough samples for ZCA whitening")
+
+        result = EmbeddingNormalizer.normalize_embeddings(sample_data, "zca")
+
+        # Check output shape
+        assert result.shape == sample_data.shape
+
+        # Check that covariance matrix is approximately identity
+        cov_matrix = np.cov(result.T)
+
+        # Check diagonal is approximately 1
+        np.testing.assert_allclose(np.diag(cov_matrix), 1, atol=1e-2)
+
+        # Check off-diagonal elements are approximately 0
+        off_diagonal = cov_matrix - np.diag(np.diag(cov_matrix))
+        assert np.max(np.abs(off_diagonal)) < 1e-3  # Slightly relaxed for ZCA
+
+    def test_invalid_normalization_method(self, sample_data):
+        """Test that invalid normalization method raises ValueError."""
+        with pytest.raises(ValueError, match="Unknown normalization method"):
+            EmbeddingNormalizer.normalize_embeddings(sample_data, "invalid_method")
+
+    def test_normalization_with_single_sample(self):
+        """Test normalization with single sample."""
+        single_sample = np.array([[1.0, 2.0, 3.0, 4.0]])
+
+        # L2 should work
+        result_l2 = EmbeddingNormalizer.normalize_embeddings(single_sample, "l2")
+        assert result_l2.shape == single_sample.shape
+        np.testing.assert_allclose(np.linalg.norm(result_l2), 1, atol=1e-10)
+
+        # Standard should work (though not very meaningful)
+        result_std = EmbeddingNormalizer.normalize_embeddings(single_sample, "standard")
+        assert result_std.shape == single_sample.shape
+
+        # PCA/ZCA might fail or change dimensions with single sample, which is acceptable
+        for method in ["pca", "zca"]:
+            try:
+                result = EmbeddingNormalizer.normalize_embeddings(single_sample, method)
+                # Just check that we get some valid output, shape might change
+                assert isinstance(result, np.ndarray)
+                assert result.shape[0] == single_sample.shape[0]  # Same number of samples
+            except (np.linalg.LinAlgError, ValueError):
+                # It's acceptable to fail with insufficient data
+                pass
+
+    def test_normalization_with_zero_variance_features(self):
+        """Test normalization with features that have zero variance."""
+        # Create data with one constant feature
+        data = np.random.randn(10, 3)
+        data[:, 1] = 5.0  # Constant feature
+
+        # Standard normalization should handle this gracefully
+        result_std = EmbeddingNormalizer.normalize_embeddings(data, "standard")
+        assert result_std.shape == data.shape
+        assert not np.isnan(result_std).any()
+        assert not np.isinf(result_std).any()
+
+        # L2 should work fine
+        result_l2 = EmbeddingNormalizer.normalize_embeddings(data, "l2")
+        assert result_l2.shape == data.shape
+        sample_norms = np.linalg.norm(result_l2, axis=1)
+        np.testing.assert_allclose(sample_norms, 1, atol=1e-10)
+
+    def test_normalization_with_nan_values(self):
+        """Test normalization behavior with NaN values."""
+        data = np.array([[1.0, 2.0, np.nan], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
+
+        # Most normalization methods should either handle NaN or raise an error
+        for method in ["standard", "l2", "pca", "zca"]:
+            try:
+                result = EmbeddingNormalizer.normalize_embeddings(data, method)
+                # If it succeeds, check shape is preserved
+                assert result.shape == data.shape
+            except (ValueError, np.linalg.LinAlgError):
+                # It's acceptable to fail with NaN values
+                pass
+
+    def test_normalization_with_inf_values(self):
+        """Test normalization behavior with infinite values."""
+        data = np.array([[1.0, 2.0, np.inf], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
+
+        # Most normalization methods should either handle inf or raise an error
+        for method in ["standard", "l2", "pca", "zca"]:
+            try:
+                result = EmbeddingNormalizer.normalize_embeddings(data, method)
+                # If it succeeds, check shape is preserved
+                assert result.shape == data.shape
+            except (ValueError, np.linalg.LinAlgError):
+                # It's acceptable to fail with inf values
+                pass
+
+    def test_normalization_preserves_data_type(self):
+        """Test that normalization preserves input data type when possible."""
+        for dtype in [np.float32, np.float64]:
+            data = np.random.randn(10, 5).astype(dtype)
+
+            for method in ["none", "standard", "l2"]:
+                result = EmbeddingNormalizer.normalize_embeddings(data, method)
+                # Note: Some operations might promote float32 to float64
+                assert np.issubdtype(result.dtype, np.floating)
+
+    def test_normalization_consistency(self):
+        """Test that normalization gives consistent results."""
+        np.random.seed(123)
+        data = np.random.randn(50, 20)
+
+        for method in ["standard", "l2", "pca", "zca"]:
+            result1 = EmbeddingNormalizer.normalize_embeddings(data, method)
+            result2 = EmbeddingNormalizer.normalize_embeddings(data, method)
+
+            # Results should be identical for the same input
+            np.testing.assert_array_equal(result1, result2)
+
+    def test_large_data_normalization(self):
+        """Test normalization with larger datasets."""
+        # Create larger dataset to test scalability
+        large_data = np.random.randn(1000, 100)
+
+        for method in ["standard", "l2"]:
+            result = EmbeddingNormalizer.normalize_embeddings(large_data, method)
+            assert result.shape == large_data.shape
+
+        # PCA/ZCA might be slower but should still work
+        for method in ["pca", "zca"]:
+            try:
+                result = EmbeddingNormalizer.normalize_embeddings(large_data, method)
+                assert result.shape == large_data.shape
+            except MemoryError:
+                # Acceptable for very large matrices
+                pytest.skip(f"{method} failed due to memory constraints")
+
+
+class TestNormalizationIntegration:
+    """Test normalization integration with clustering pipeline."""
+
+    def test_clustering_config_normalization_method(self):
+        """Test that ClusteringConfig properly handles normalization_method."""
+        config = ClusteringConfig(
+            embedding_files=["test.pkl"], metadata_file="test.tsv", normalization_method="l2"
+        )
+        assert config.normalization_method == "l2"
+
+        # Test default
+        config_default = ClusteringConfig(embedding_files=["test.pkl"], metadata_file="test.tsv")
+        assert config_default.normalization_method == "l2"
+
+    @patch("clustering_evaluation.ClusteringEngine.perform_clustering")
+    @patch("clustering_evaluation.ClusteringEngine.evaluate_clustering")
+    def test_normalization_applied_in_subsampling(
+        self, mock_evaluate, mock_clustering, sample_embeddings, sample_metadata, temp_files
+    ):
+        """Test that normalization is applied in subsampling analysis."""
+        mock_clustering.return_value = np.array([0, 0, 1, 1, 1])
+        mock_evaluate.return_value = {
+            "adjusted_rand_score": 0.5,
+            "silhouette_score": 0.3,
+            "calinski_harabasz_score": 10.0,
+            "davies_bouldin_score": 1.5,
+            "normalized_mutual_info": 0.4,
+            "homogeneity": 0.3,
+            "completeness": 0.6,
+            "v_measure": 0.4,
+        }
+
+        config = ClusteringConfig(
+            embedding_files=[temp_files["embedding_file"]],
+            metadata_file=temp_files["metadata_file"],
+            normalization_method="standard",
+            subsample=2,  # Small number for testing
+            subsample_fraction=0.8,
+        )
+
+        analyzer = SubsamplingAnalyzer(config)
+
+        # Mock the required objects
+        embeddings_dict = {temp_files["embedding_file"]: sample_embeddings}
+        protein_ids = list(sample_embeddings.keys())
+        true_labels = np.array([0, 0, 1, 1, 2])
+
+        # This should not raise an error and should apply normalization
+        result = analyzer.run_subsampling_analysis(protein_ids, embeddings_dict, true_labels)
+
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) > 0
+
+    def test_normalization_method_validation(self):
+        """Test that invalid normalization methods are caught early."""
+        with pytest.raises(ValueError):
+            EmbeddingNormalizer.normalize_embeddings(np.random.randn(10, 5), "invalid")
+
+    def test_normalization_with_real_clustering(self, sample_embeddings):
+        """Test normalization with actual clustering (integration test)."""
+        embeddings_matrix = np.array(list(sample_embeddings.values()))
+
+        # Test that different normalizations produce different clustering inputs
+        norm_none = EmbeddingNormalizer.normalize_embeddings(embeddings_matrix, "none")
+        norm_std = EmbeddingNormalizer.normalize_embeddings(embeddings_matrix, "standard")
+        norm_l2 = EmbeddingNormalizer.normalize_embeddings(embeddings_matrix, "l2")
+
+        # They should be different (unless original data was already normalized)
+        assert not np.allclose(norm_none, norm_std, atol=1e-3)
+        assert not np.allclose(norm_none, norm_l2, atol=1e-3)
+        assert not np.allclose(norm_std, norm_l2, atol=1e-3)
+
+        # All should have the same shape
+        assert norm_none.shape == norm_std.shape == norm_l2.shape == embeddings_matrix.shape
