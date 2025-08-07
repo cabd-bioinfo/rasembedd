@@ -684,26 +684,12 @@ def get_output_filename(
     """Generate descriptive output filename."""
     emb_name = Path(embeddings_file).stem
 
-    # Extract prefix (with possible directory info) from base_name if present
-    prefix = ""
-    if "_" in base_name:
-        possible_prefix, rest = base_name.split("_", 1)
-        # Only treat as prefix if not a method name
-        method_lower = method.lower()
-        if possible_prefix and possible_prefix.lower() not in [
-            method_lower,
-            "heatmap",
-            "projection",
-            "umap",
-            "tsne",
-            "pca",
-        ]:
-            prefix = possible_prefix
+    # Use base_name as the output_prefix (directory or filename prefix) as provided
+    output_prefix = base_name
 
     # Build filename components
     if "heatmap" in base_name.lower():
         # For heatmaps: prefix_heatmap_metric_color_embedding.format
-        # Extract distance metric from base_name
         parts = base_name.split("_")
         distance_metric = "cosine"  # default
         for part in parts:
@@ -711,22 +697,37 @@ def get_output_filename(
                 distance_metric = part.lower()
                 break
         method_part = f"heatmap_{distance_metric}"
+        filename_core = f"{method_part}_{color_column}_{emb_name}.{output_format}"
     else:
-        # For projections: prefix_method_projection_color_embedding.format
-        method_part = f"{method}_projection"
+        # For projections: avoid repeating method/projection if already in prefix
+        method_lower = method.lower()
+        prefix_lower = output_prefix.lower() if output_prefix else ""
+        # Remove redundant method/projection in prefix
+        if (method_lower in prefix_lower) or ("projection" in prefix_lower):
+            filename_core = f"{color_column}_{emb_name}.{output_format}"
+        else:
+            filename_core = f"{method}_{color_column}_{emb_name}.{output_format}"
 
     # Compose the final filename
-    if prefix:
-        # Handle directory info in prefix
-        if "/" in prefix:
-            dir_part, prefix_only = prefix.rsplit("/", 1)
-            filename = (
-                f"{dir_part}/{prefix_only}_{method_part}_{color_column}_{emb_name}.{output_format}"
-            )
+    if output_prefix:
+        # If output_prefix ends with / or is a directory, treat as directory
+        if output_prefix.endswith("/") or os.path.isdir(output_prefix):
+            prefix_dir = output_prefix.rstrip("/")
+            # Ensure the directory exists
+            os.makedirs(prefix_dir, exist_ok=True)
+            filename = f"{prefix_dir}/{filename_core}"
         else:
-            filename = f"{prefix}_{method_part}_{color_column}_{emb_name}.{output_format}"
+            # If output_prefix is a path with directories, ensure parent directory exists
+            parent_dir = os.path.dirname(output_prefix)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+            # Insert underscore if prefix does not end with _
+            if output_prefix.endswith("_"):
+                filename = f"{output_prefix}{filename_core}"
+            else:
+                filename = f"{output_prefix}_{filename_core}"
     else:
-        filename = f"{method_part}_{color_column}_{emb_name}.{output_format}"
+        filename = filename_core
 
     return filename
 
