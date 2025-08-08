@@ -262,11 +262,21 @@ class EmbeddingNormalizer:
 
         # Step 2: PCA reduction
         if isinstance(pca_components, (int, float)) and pca_components != 0:
-            if isinstance(pca_components, float):
-                # Treat as variance retained in (0,1]
-                n_components = min(max(pca_components, 1e-6), 1.0)
-            else:
-                n_components = max(int(pca_components), 1)
+            # Interpret pca_components as follows:
+            # - int (>=1): number of components
+            # - float > 1: treat as integer component count (e.g., 256.0 -> 256)
+            # - 0 < float < 1: fraction of variance to retain
+            # - float == 1.0: keep all components (use None to avoid invalid 1.0)
+            if isinstance(pca_components, int):
+                n_components: int | float | None = max(int(pca_components), 1)
+            else:  # float
+                if pca_components > 1.0:
+                    n_components = max(int(round(pca_components)), 1)
+                elif 0.0 < pca_components < 1.0:
+                    n_components = pca_components
+                else:  # pca_components == 1.0 (keep all components)
+                    n_components = None
+
             pca = PCA(n_components=n_components, random_state=random_state)
             X = pca.fit_transform(X)
 
