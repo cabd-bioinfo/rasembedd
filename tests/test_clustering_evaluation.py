@@ -518,11 +518,17 @@ class TestClusteringResult:
         cluster_labels = np.array([0, 1, 0, 1, 2])
         metrics = {"adjusted_rand_score": 0.5, "silhouette_score": 0.3}
 
-        result = ClusteringResult(cluster_labels=cluster_labels, n_clusters=3, metrics=metrics)
+        result = ClusteringResult(
+            cluster_labels=cluster_labels,
+            n_clusters=3,
+            metrics=metrics,
+            params={"method": "kmeans", "n_clusters": 3},
+        )
 
         assert np.array_equal(result.cluster_labels, cluster_labels)
         assert result.n_clusters == 3
         assert result.metrics == metrics
+        assert result.params == {"method": "kmeans", "n_clusters": 3}
 
 
 class TestVisualizer:
@@ -740,6 +746,66 @@ class TestSubsamplingAnalyzer:
         assert stats_df["embedding2"].iloc[0] == "emb2"
 
 
+class TestDensityBasedOptimization:
+    """Tests for DBSCAN/HDBSCAN parameter selection and handling."""
+
+    def _make_separable_data(self, n_per_cluster: int = 20, seed: int = 42):
+        np.random.seed(seed)
+        centers = np.array([[0.0, 0.0], [5.0, 5.0], [0.0, 5.0]])
+        X = []
+        y = []
+        for i, c in enumerate(centers):
+            X.append(c + 0.4 * np.random.randn(n_per_cluster, 2))
+            y.extend([i] * n_per_cluster)
+        X = np.vstack(X)
+        y = np.array(y)
+        return X, y
+
+    def test_dbscan_parameter_search_updates_options_and_finds_clusters(self):
+        """DBSCAN search should adjust eps/min_samples and yield >=2 clusters."""
+        engine = ClusteringEngine()
+        X, y = self._make_separable_data(n_per_cluster=15, seed=123)
+
+        # Intentionally poor defaults to force the search to do work
+        opts = {"eps": 0.05, "min_samples": 15}
+
+        best_k, by_k = engine.find_optimal_clusters(
+            X, y, method="dbscan", max_clusters=10, clustering_options=opts
+        )
+
+        # Options should be updated to selected parameters
+        assert opts["eps"] != 0.05 or opts["min_samples"] != 15
+
+        # Should report at least 2 clusters as best across criteria
+        for crit, k in best_k.items():
+            assert k >= 2
+
+        # With the chosen params, running DBSCAN should produce >=2 clusters
+        labels = engine.perform_clustering(X, method="dbscan", **opts)
+        uniq = set(labels)
+        n_c = len(uniq) - (1 if -1 in uniq else 0)
+        assert n_c >= 2
+
+    def test_hdbscan_single_evaluation_reports_observed_clusters(self):
+        """HDBSCAN path should report observed cluster count (>=2 here)."""
+        engine = ClusteringEngine()
+        X, y = self._make_separable_data(n_per_cluster=12, seed=321)
+
+        opts = {"min_cluster_size": 5, "min_samples": 2}
+        best_k, by_k = engine.find_optimal_clusters(
+            X, y, method="hdbscan", max_clusters=10, clustering_options=opts
+        )
+
+        # Key in by_k should be the observed number of clusters
+        assert isinstance(by_k, dict) and len(by_k) == 1
+        observed_k = next(iter(by_k.keys()))
+        assert observed_k >= 2
+
+        # All criteria should reflect the same observed cluster count
+        for crit, k in best_k.items():
+            assert k == observed_k
+
+
 class TestClusteringAnalyzer:
     """Test cases for ClusteringAnalyzer."""
 
@@ -808,6 +874,7 @@ class TestClusteringAnalyzer:
                         cluster_labels=np.array([0, 0, 1, 1, 2]),
                         n_clusters=3,
                         metrics={"adjusted_rand_score": 0.5},
+                        params={"init": "k-means++", "max_iter": 300},
                     )
                 },
                 "protein_ids": ["protein_1", "protein_2", "protein_3", "protein_4", "protein_5"],
@@ -824,11 +891,19 @@ class TestClusteringAnalyzer:
             "test_embeddings_cluster_assignments.tsv",
             "test_embeddings_clustering_results.tsv",
             "embedding_clustering_summary.tsv",
+            "embedding_clustering_parameters.tsv",
         ]
 
         for filename in expected_files:
             filepath = os.path.join(temp_files["output_dir"], filename)
             assert os.path.exists(filepath)
+
+        # Verify that clustering results include params_json column
+        results_path = os.path.join(
+            temp_files["output_dir"], "test_embeddings_clustering_results.tsv"
+        )
+        results_df = pd.read_csv(results_path, sep="\t")
+        assert "params_json" in results_df.columns
 
     def test_integration_small_dataset(self, temp_files):
         """Test end-to-end integration with small dataset."""

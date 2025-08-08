@@ -14,9 +14,9 @@ import warnings
 
 # Suppress specific deprecation warning from HDBSCAN library
 warnings.filterwarnings("ignore", message=".*force_all_finite.*", category=FutureWarning)
+import json
 import random
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import hdbscan
@@ -24,12 +24,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import umap
 from joblib import Parallel, delayed
 from scipy.stats import ttest_ind, wilcoxon
 from sklearn.cluster import DBSCAN, AgglomerativeClustering, KMeans
 from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
 from sklearn.metrics import (
     adjusted_rand_score,
     calinski_harabasz_score,
@@ -41,6 +39,7 @@ from sklearn.metrics import (
     v_measure_score,
 )
 from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler, normalize
 from statsmodels.stats.multitest import multipletests
 
@@ -86,6 +85,7 @@ class ClusteringResult:
     cluster_labels: np.ndarray
     n_clusters: int
     metrics: Dict[str, float]
+    params: Dict[str, Any]
 
 
 class DataLoader:
@@ -321,12 +321,126 @@ class ClusteringEngine:
         max_clusters: int = 15,
         clustering_options: Dict[str, Any] = None,
     ) -> Tuple[Dict[str, int], Dict[int, Dict[str, float]]]:
-        """Find optimal number of clusters using multiple criteria."""
+        """Find optimal number of clusters using multiple criteria. For dbscan/hdbscan, just evaluate with provided parameters."""
 
         print(f"Finding optimal number of clusters for {method}...")
 
         if clustering_options is None:
             clustering_options = {}
+
+        # For density-based methods, handle specially
+        if method == "hdbscan":
+            # Run once with provided params; HDBSCAN doesn't use k directly here
+            cluster_labels = self.perform_clustering(
+                embeddings, method=method, **clustering_options
+            )
+            metrics = self.evaluate_clustering(cluster_labels, true_labels, embeddings)
+            unique_labels = set(cluster_labels)
+            n_clusters_found = len(unique_labels) - (1 if -1 in unique_labels else 0)
+            k_key = max(n_clusters_found, 0)
+            best_k = {
+                m: k_key
+                for m in [
+                    "silhouette",
+                    "calinski_harabasz",
+                    "davies_bouldin",
+                    "adjusted_rand",
+                    "v_measure",
+                ]
+            }
+            metrics_by_k = {k_key: metrics}
+            return best_k, metrics_by_k
+
+        if method == "dbscan":
+            # Search eps and min_samples using k-distance quantiles
+            eps_default = clustering_options.get("eps", 0.5)
+            min_samples_default = clustering_options.get("min_samples", 5)
+
+            # Build candidate grids
+            n = len(embeddings)
+            # Choose k for kNN distance roughly min_samples
+            candidate_min_samples = sorted(
+                {2, 3, 4, 5, min_samples_default, max(2, int(0.01 * n)), max(2, int(0.02 * n))}
+            )
+            candidate_min_samples = [m for m in candidate_min_samples if m <= max(2, int(0.05 * n))]
+
+            # Compute k-distance for a base k (use max of candidates)
+            k_for_knn = min(max(candidate_min_samples), max(2, min(50, n - 1)))
+            try:
+                nbrs = NearestNeighbors(n_neighbors=k_for_knn).fit(embeddings)
+                distances, _ = nbrs.kneighbors(embeddings)
+                # Use the distance to the k-th neighbor
+                kth_dist = distances[:, -1]
+                quantiles = [0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95]
+                candidate_eps = sorted(
+                    {float(np.quantile(kth_dist, q)) for q in quantiles} | {eps_default}
+                )
+            except Exception:
+                # Fallback to a simple eps list around default
+                candidate_eps = sorted({eps_default * f for f in [0.5, 0.75, 1.0, 1.25, 1.5]})
+
+            metrics_by_k: Dict[int, Dict[str, float]] = {}
+            # Track best by a composite score preferring valid clusterings
+            best_score = -np.inf
+            best_result = None  # (labels, metrics, n_clusters, eps, min_samples)
+
+            for ms in candidate_min_samples:
+                for eps in candidate_eps:
+                    labels = self.perform_clustering(
+                        embeddings, method="dbscan", eps=eps, min_samples=int(ms)
+                    )
+                    # Count clusters excluding noise
+                    uniq = set(labels)
+                    n_c = len(uniq) - (1 if -1 in uniq else 0)
+                    metrics = self.evaluate_clustering(labels, true_labels, embeddings)
+                    # Composite: prioritize having >1 clusters, then ARI, then silhouette
+                    validity = 1 if n_c >= 2 else 0
+                    score = (
+                        validity * 1.0
+                        + metrics.get("adjusted_rand_score", 0.0)
+                        + 0.1 * max(metrics.get("silhouette_score", -1.0), -1.0)
+                        - 0.01 * metrics.get("davies_bouldin_score", float("inf"))
+                    )
+                    # Prefer more clusters if tie on score
+                    tie_break = n_c
+                    if score > best_score or (
+                        np.isclose(score, best_score)
+                        and tie_break > (best_result[2] if best_result else -1)
+                    ):
+                        best_score = score
+                        best_result = (labels, metrics, n_c, eps, int(ms))
+
+                    # Store metrics keyed by number of clusters seen for overview (last wins per k)
+                    metrics_by_k[n_c] = metrics
+
+            if best_result is None:
+                # As a last resort, run default
+                labels = self.perform_clustering(
+                    embeddings, method="dbscan", eps=eps_default, min_samples=min_samples_default
+                )
+                uniq = set(labels)
+                n_c = len(uniq) - (1 if -1 in uniq else 0)
+                metrics = self.evaluate_clustering(labels, true_labels, embeddings)
+                best_result = (labels, metrics, n_c, eps_default, min_samples_default)
+                metrics_by_k[n_c] = metrics
+
+            # Update options so downstream run uses the selected params
+            clustering_options["eps"], clustering_options["min_samples"] = (
+                best_result[3],
+                best_result[4],
+            )
+            n_clusters_found = max(best_result[2], 0)
+            best_k = {
+                m: n_clusters_found
+                for m in [
+                    "silhouette",
+                    "calinski_harabasz",
+                    "davies_bouldin",
+                    "adjusted_rand",
+                    "v_measure",
+                ]
+            }
+            return best_k, metrics_by_k
 
         # Ensure we have a valid range for clustering
         max_possible_clusters = min(max_clusters + 1, len(embeddings))
@@ -391,7 +505,6 @@ class Visualizer:
     ):
         """Plot confusion matrix (truth table) with true labels as rows and cluster labels as columns."""
         from scipy.optimize import linear_sum_assignment
-        from sklearn.metrics import confusion_matrix
 
         # Get unique labels and clusters that actually exist in the data
         unique_true_labels = np.unique(true_labels)
@@ -663,7 +776,7 @@ class SubsamplingAnalyzer:
                 # Get method-specific options
                 method_options = self.config.clustering_options.get(method, {})
 
-                if self.config.n_clusters:
+                if self.config.n_clusters and method in ["kmeans", "hierarchical"]:
                     cluster_labels = self.clustering_engine.perform_clustering(
                         emb_matrix,
                         method=method,
@@ -678,10 +791,15 @@ class SubsamplingAnalyzer:
                         max_clusters=self.config.max_clusters,
                         clustering_options=method_options,
                     )
-                    optimal_k = best_k["adjusted_rand"]
-                    cluster_labels = self.clustering_engine.perform_clustering(
-                        emb_matrix, method=method, n_clusters=optimal_k, **method_options
-                    )
+                    if method in ["dbscan", "hdbscan"]:
+                        cluster_labels = self.clustering_engine.perform_clustering(
+                            emb_matrix, method=method, **method_options
+                        )
+                    else:
+                        optimal_k = best_k["adjusted_rand"]
+                        cluster_labels = self.clustering_engine.perform_clustering(
+                            emb_matrix, method=method, n_clusters=optimal_k, **method_options
+                        )
 
                 metrics = self.clustering_engine.evaluate_clustering(
                     cluster_labels, sampled_labels, emb_matrix
@@ -944,7 +1062,7 @@ class ClusteringAnalyzer:
                 # Get method-specific options
                 method_options = self.config.clustering_options.get(method, {})
 
-                if self.config.n_clusters:
+                if self.config.n_clusters and method in ["kmeans", "hierarchical"]:
                     cluster_labels = self.clustering_engine.perform_clustering(
                         embedding_matrix,
                         method=method,
@@ -960,30 +1078,89 @@ class ClusteringAnalyzer:
                         max_clusters=self.config.max_clusters,
                         clustering_options=method_options,
                     )
-                    optimal_k = best_k["adjusted_rand"]
-                    print(f"Optimal number of clusters: {optimal_k}")
 
-                    cluster_labels = self.clustering_engine.perform_clustering(
-                        embedding_matrix, method=method, n_clusters=optimal_k, **method_options
-                    )
-                    n_clusters = optimal_k
+                    if method in ["dbscan", "hdbscan"]:
+                        # Use discovered parameters already stored in method_options
+                        cluster_labels = self.clustering_engine.perform_clustering(
+                            embedding_matrix, method=method, **method_options
+                        )
+                        # Determine actual number of clusters (exclude noise)
+                        uniq = set(cluster_labels)
+                        n_clusters = len(uniq) - (1 if -1 in uniq else 0)
+                        # Log chosen params for transparency
+                        if method == "dbscan":
+                            print(
+                                f"Selected DBSCAN params: eps={method_options.get('eps')}, min_samples={method_options.get('min_samples')} -> clusters={n_clusters}"
+                            )
+                        else:
+                            print(
+                                f"HDBSCAN params: min_cluster_size={method_options.get('min_cluster_size')}, min_samples={method_options.get('min_samples')} -> clusters={n_clusters}"
+                            )
+                        # Optional: plot overview of metrics vs number of clusters found
+                        emb_name = os.path.splitext(os.path.basename(embedding_file))[0]
+                        optimization_path = os.path.join(
+                            self.config.output_dir, f"cluster_optimization_{emb_name}_{method}.pdf"
+                        )
+                        if optimization_results:
+                            self.visualizer.plot_cluster_optimization(
+                                optimization_results, optimization_path
+                            )
+                    else:
+                        optimal_k = best_k["adjusted_rand"]
+                        print(f"Optimal number of clusters: {optimal_k}")
 
-                    # Save optimization plot
-                    emb_name = os.path.splitext(os.path.basename(embedding_file))[0]
-                    optimization_path = os.path.join(
-                        self.config.output_dir, f"cluster_optimization_{emb_name}_{method}.pdf"
-                    )
-                    self.visualizer.plot_cluster_optimization(
-                        optimization_results, optimization_path
-                    )
+                        cluster_labels = self.clustering_engine.perform_clustering(
+                            embedding_matrix, method=method, n_clusters=optimal_k, **method_options
+                        )
+                        n_clusters = optimal_k
+
+                        # Save optimization plot
+                        emb_name = os.path.splitext(os.path.basename(embedding_file))[0]
+                        optimization_path = os.path.join(
+                            self.config.output_dir, f"cluster_optimization_{emb_name}_{method}.pdf"
+                        )
+                        self.visualizer.plot_cluster_optimization(
+                            optimization_results, optimization_path
+                        )
 
                 # Evaluate clustering
                 metrics = self.clustering_engine.evaluate_clustering(
                     cluster_labels, true_labels, embedding_matrix
                 )
 
+                # Capture parameters used
+                used_params: Dict[str, Any] = {}
+                if method == "kmeans":
+                    used_params = {
+                        "n_clusters": n_clusters,
+                        "init": method_options.get("init"),
+                        "max_iter": method_options.get("max_iter"),
+                    }
+                elif method == "hierarchical":
+                    used_params = {
+                        "n_clusters": n_clusters,
+                        "linkage": method_options.get("linkage"),
+                        "metric": method_options.get("metric"),
+                    }
+                elif method == "dbscan":
+                    used_params = {
+                        "eps": method_options.get("eps"),
+                        "min_samples": method_options.get("min_samples"),
+                    }
+                elif method == "hdbscan":
+                    used_params = {
+                        "min_cluster_size": method_options.get("min_cluster_size"),
+                        "min_samples": method_options.get("min_samples"),
+                        "cluster_selection_epsilon": method_options.get(
+                            "cluster_selection_epsilon"
+                        ),
+                    }
+
                 results[method] = ClusteringResult(
-                    cluster_labels=cluster_labels, n_clusters=n_clusters, metrics=metrics
+                    cluster_labels=cluster_labels,
+                    n_clusters=n_clusters,
+                    metrics=metrics,
+                    params=used_params,
                 )
 
                 print(f"Number of clusters: {n_clusters}")
@@ -1045,6 +1222,8 @@ class ClusteringAnalyzer:
             for method, result in emb_result["results"].items():
                 row = {"method": method, "n_clusters": result.n_clusters}
                 row.update(result.metrics)
+                # Flatten params into JSON string for readability
+                row["params_json"] = json.dumps(result.params)
                 results_df.append(row)
 
             results_df = pd.DataFrame(results_df)
@@ -1054,11 +1233,13 @@ class ClusteringAnalyzer:
                 index=False,
             )
 
-        # Create summary file
-        summary_results = []
+        # Create summary file and parameters audit
+        summary_results: List[Dict[str, Any]] = []
+        params_records: List[Dict[str, Any]] = []
         for embedding_file, emb_result in embedding_results.items():
             emb_name = os.path.splitext(os.path.basename(embedding_file))[0]
             for method, result in emb_result["results"].items():
+                # Summary row of metrics
                 row = {
                     "embedding": emb_name,
                     "method": method,
@@ -1067,10 +1248,23 @@ class ClusteringAnalyzer:
                 row.update(result.metrics)
                 summary_results.append(row)
 
+                # Parameters record
+                p_row = {"embedding": emb_name, "method": method}
+                p_row.update(result.params)
+                params_records.append(p_row)
+
         if summary_results:
             summary_df = pd.DataFrame(summary_results)
             summary_df.to_csv(
                 os.path.join(self.config.output_dir, "embedding_clustering_summary.tsv"),
+                sep="\t",
+                index=False,
+            )
+
+        if params_records:
+            params_df = pd.DataFrame(params_records)
+            params_df.to_csv(
+                os.path.join(self.config.output_dir, "embedding_clustering_parameters.tsv"),
                 sep="\t",
                 index=False,
             )

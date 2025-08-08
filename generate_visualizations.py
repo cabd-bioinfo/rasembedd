@@ -700,13 +700,13 @@ def get_output_filename(
         filename_core = f"{method_part}_{color_column}_{emb_name}.{output_format}"
     else:
         # For projections: avoid repeating method/projection if already in prefix
-        method_lower = method.lower()
         prefix_lower = output_prefix.lower() if output_prefix else ""
-        # Remove redundant method/projection in prefix
-        if (method_lower in prefix_lower) or ("projection" in prefix_lower):
+        # If prefix already mentions a projection, don't duplicate the word
+        if "projection" in prefix_lower:
             filename_core = f"{color_column}_{emb_name}.{output_format}"
         else:
-            filename_core = f"{method}_{color_column}_{emb_name}.{output_format}"
+            # Always include 'projection' token for clarity, as expected by tests
+            filename_core = f"{method}_projection_{color_column}_{emb_name}.{output_format}"
 
     # Compose the final filename
     if output_prefix:
