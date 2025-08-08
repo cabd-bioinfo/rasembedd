@@ -904,7 +904,7 @@ class SubsamplingAnalyzer:
 
         print(f"Running {self.config.subsample} subsampling runs...")
 
-        subsample_results = Parallel(n_jobs=-1)(
+        subsample_results = Parallel(n_jobs=-1, prefer="threads")(
             delayed(self.run_subsample)(i, protein_ids, embeddings_dict, true_labels)
             for i in range(self.config.subsample)
         )
@@ -1369,11 +1369,54 @@ class ClusteringAnalyzer:
 
         if summary_results:
             summary_df = pd.DataFrame(summary_results)
-            summary_df.to_csv(
-                os.path.join(self.config.output_dir, "embedding_clustering_summary.tsv"),
-                sep="\t",
-                index=False,
-            )
+            summary_path = os.path.join(self.config.output_dir, "embedding_clustering_summary.tsv")
+            # Write TSV as a clean table for downstream tools/tests
+            summary_df.to_csv(summary_path, sep="\t", index=False)
+
+            # Emit a sidecar file with commented configuration details
+            try:
+                comments_path = os.path.join(
+                    self.config.output_dir, "embedding_clustering_summary.comments.txt"
+                )
+                header_lines: List[str] = []
+                header_lines.append(
+                    "# rasembedd clustering summary: run configuration and parameters"
+                )
+                header_lines.append(
+                    "# This file accompanies embedding_clustering_summary.tsv and is informational."
+                )
+                header_lines.append(f"# embedding_files: {', '.join(self.config.embedding_files)}")
+                header_lines.append(f"# metadata_file: {self.config.metadata_file}")
+                header_lines.append(f"# output_dir: {self.config.output_dir}")
+                header_lines.append(f"# id_column: {self.config.id_column}")
+                header_lines.append(f"# label_column: {self.config.label_column}")
+                header_lines.append(f"# methods: {', '.join(self.config.methods)}")
+                header_lines.append(f"# n_clusters: {self.config.n_clusters}")
+                header_lines.append(f"# max_clusters: {self.config.max_clusters}")
+                header_lines.append(f"# normalization_method: {self.config.normalization_method}")
+                header_lines.append(
+                    f"# pipeline: center={self.config.norm_center}, scale={self.config.norm_scale}, pca_components={self.config.norm_pca_components}, l2={self.config.norm_l2}"
+                )
+                header_lines.append(
+                    f"# subsample: runs={self.config.subsample}, fraction={self.config.subsample_fraction}, stratified={self.config.stratified_subsample}"
+                )
+                # Method options
+                for method, opts in (self.config.clustering_options or {}).items():
+                    header_lines.append(
+                        f"# method_options.{method}: {json.dumps(opts, ensure_ascii=False)}"
+                    )
+                # Per-embedding used params
+                for embedding_file, emb_result in embedding_results.items():
+                    emb_name = os.path.splitext(os.path.basename(embedding_file))[0]
+                    for method, result in emb_result["results"].items():
+                        header_lines.append(
+                            f"# used_params.{emb_name}.{method}: {json.dumps(result.params, ensure_ascii=False)}"
+                        )
+                with open(comments_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(header_lines) + "\n")
+            except Exception:
+                # Don't fail saving results if comments sidecar cannot be written
+                pass
 
         if params_records:
             params_df = pd.DataFrame(params_records)
