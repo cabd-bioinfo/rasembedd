@@ -1361,3 +1361,82 @@ class TestNormalizationIntegration:
 
         # All should have the same shape
         assert norm_none.shape == norm_std.shape == norm_l2.shape == embeddings_matrix.shape
+
+
+class TestNormalizationPipeline:
+    """Tests for the new 3-step normalization pipeline."""
+
+    def test_pipeline_center_only(self):
+        X = np.random.randn(50, 10)
+        Xp = EmbeddingNormalizer.normalize_pipeline(
+            X, center=True, scale=False, pca_components=0, l2=False
+        )
+        # Features should be centered
+        np.testing.assert_allclose(np.mean(Xp, axis=0), 0.0, atol=1e-7)
+
+    def test_pipeline_scale_only(self):
+        X = np.random.randn(60, 12) + 3.14  # shift mean to ensure no centering
+        Xp = EmbeddingNormalizer.normalize_pipeline(
+            X, center=False, scale=True, pca_components=0, l2=False
+        )
+        # Features should have unit variance (approximately)
+        stds = np.std(Xp, axis=0, ddof=0)
+        np.testing.assert_allclose(stds, 1.0, atol=1e-6, rtol=1e-4)
+        # Means not necessarily zero as we didn't center
+        assert not np.allclose(np.mean(Xp, axis=0), 0.0)
+
+    def test_pipeline_pca_components_count(self):
+        X = np.random.randn(40, 8)
+        Xp = EmbeddingNormalizer.normalize_pipeline(
+            X, center=True, scale=True, pca_components=3, l2=False
+        )
+        assert Xp.shape == (40, 3)
+
+    def test_pipeline_pca_variance_fraction(self):
+        X = np.random.randn(80, 20)
+        Xp = EmbeddingNormalizer.normalize_pipeline(
+            X, center=True, scale=True, pca_components=0.9, l2=False
+        )
+        # Reduced dimensionality but >0 and <= original features
+        assert 0 < Xp.shape[1] <= 20
+
+    def test_pipeline_l2_applied(self):
+        X = np.random.randn(25, 7)
+        Xp = EmbeddingNormalizer.normalize_pipeline(
+            X, center=False, scale=False, pca_components=0, l2=True
+        )
+        norms = np.linalg.norm(Xp, axis=1)
+        np.testing.assert_allclose(norms, 1.0, atol=1e-10)
+
+    @patch("clustering_evaluation.ClusteringEngine.perform_clustering")
+    def test_pipeline_used_in_subsampling(self, mock_perf, sample_embeddings):
+        # Make perform_clustering capture the embeddings shape passed in
+        def _perf(emb_matrix, method="kmeans", n_clusters=None, **kwargs):
+            # Expect PCA reduced to 2 comps
+            assert emb_matrix.shape[1] == 2
+            # Return dummy labels of correct length
+            return np.zeros(emb_matrix.shape[0], dtype=int)
+
+        mock_perf.side_effect = _perf
+
+        config = ClusteringConfig(
+            embedding_files=["test.pkl"],
+            metadata_file="metadata.tsv",
+            methods=["kmeans"],
+            subsample=1,
+            subsample_fraction=0.8,
+            normalization_method="pipeline",
+            norm_center=True,
+            norm_scale=True,
+            norm_pca_components=2,
+            norm_l2=False,
+        )
+        analyzer = SubsamplingAnalyzer(config)
+
+        protein_ids = list(sample_embeddings.keys())
+        embeddings_dict = {"test.pkl": sample_embeddings}
+        true_labels = np.array([0, 0, 1, 1, 2])
+
+        df = analyzer.run_subsampling_analysis(protein_ids, embeddings_dict, true_labels)
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) > 0

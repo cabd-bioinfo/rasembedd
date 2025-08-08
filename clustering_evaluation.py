@@ -66,6 +66,13 @@ class ClusteringConfig:
     n_clusters: Optional[int] = None
     max_clusters: int = 15
     normalization_method: str = "l2"
+    # Normalization pipeline options (optional; used when normalization_method == 'pipeline' or any is set)
+    norm_center: bool = False
+    norm_scale: bool = False
+    # PCA components: int for component count, float in (0,1] for variance retained; 0 disables PCA
+    norm_pca_components: float | int = 0
+    # Apply L2 at the end of pipeline (only when pipeline is active)
+    norm_l2: bool = True
     clustering_options: Dict[str, Any] = None
     subsample: int = 0
     subsample_fraction: float = 0.8
@@ -229,6 +236,45 @@ class EmbeddingNormalizer:
         whitened = centered @ whitening_matrix.T
 
         return whitened
+
+    @staticmethod
+    def normalize_pipeline(
+        embeddings: np.ndarray,
+        *,
+        center: bool = False,
+        scale: bool = False,
+        pca_components: float | int = 0,
+        l2: bool = True,
+        random_state: int = 42,
+    ) -> np.ndarray:
+        """Three-step normalization pipeline.
+
+        1) Standard normalization with optional centering and scaling
+        2) PCA dimensionality reduction (components=int or variance in (0,1]); 0 disables PCA
+        3) Optional L2 per-sample normalization
+        """
+        X = embeddings
+
+        # Step 1: Standardization
+        if center or scale:
+            scaler = StandardScaler(with_mean=center, with_std=scale)
+            X = scaler.fit_transform(X)
+
+        # Step 2: PCA reduction
+        if isinstance(pca_components, (int, float)) and pca_components != 0:
+            if isinstance(pca_components, float):
+                # Treat as variance retained in (0,1]
+                n_components = min(max(pca_components, 1e-6), 1.0)
+            else:
+                n_components = max(int(pca_components), 1)
+            pca = PCA(n_components=n_components, random_state=random_state)
+            X = pca.fit_transform(X)
+
+        # Step 3: L2 normalization
+        if l2:
+            X = normalize(X, norm="l2", axis=1)
+
+        return X
 
 
 class ClusteringEngine:
@@ -767,7 +813,25 @@ class SubsamplingAnalyzer:
         for emb_name, embeddings in embeddings_dict.items():
             emb_matrix = np.array([embeddings[pid] for pid in sampled_ids if pid in embeddings])
 
-            if self.config.normalization_method != "none":
+            # Apply new pipeline if configured, else legacy normalization
+            if (
+                self.config.norm_center
+                or self.config.norm_scale
+                or (
+                    isinstance(self.config.norm_pca_components, (int, float))
+                    and self.config.norm_pca_components != 0
+                )
+                or (self.config.norm_l2 is False)
+                or self.config.normalization_method == "pipeline"
+            ):
+                emb_matrix = EmbeddingNormalizer.normalize_pipeline(
+                    emb_matrix,
+                    center=self.config.norm_center,
+                    scale=self.config.norm_scale,
+                    pca_components=self.config.norm_pca_components,
+                    l2=self.config.norm_l2,
+                )
+            elif self.config.normalization_method != "none":
                 emb_matrix = EmbeddingNormalizer.normalize_embeddings(
                     emb_matrix, self.config.normalization_method
                 )
@@ -1047,8 +1111,30 @@ class ClusteringAnalyzer:
             print(f"Proteins after filtering: {len(protein_ids)}")
             print(f"Embedding dimensions: {embedding_matrix.shape}")
 
-            # Apply normalization if specified
-            if self.config.normalization_method != "none":
+            # Apply normalization: pipeline if configured or requested, else legacy method
+            if (
+                self.config.norm_center
+                or self.config.norm_scale
+                or (
+                    isinstance(self.config.norm_pca_components, (int, float))
+                    and self.config.norm_pca_components != 0
+                )
+                or (self.config.norm_l2 is False)
+                or self.config.normalization_method == "pipeline"
+            ):
+                print(
+                    "Applying pipeline normalization: "
+                    f"center={self.config.norm_center}, scale={self.config.norm_scale}, "
+                    f"pca_components={self.config.norm_pca_components}, l2={self.config.norm_l2}"
+                )
+                embedding_matrix = EmbeddingNormalizer.normalize_pipeline(
+                    embedding_matrix,
+                    center=self.config.norm_center,
+                    scale=self.config.norm_scale,
+                    pca_components=self.config.norm_pca_components,
+                    l2=self.config.norm_l2,
+                )
+            elif self.config.normalization_method != "none":
                 print(f"Applying {self.config.normalization_method} normalization...")
                 embedding_matrix = EmbeddingNormalizer.normalize_embeddings(
                     embedding_matrix, self.config.normalization_method
@@ -1333,9 +1419,46 @@ def parse_arguments() -> ClusteringConfig:
     )
     parser.add_argument(
         "--normalization-method",
-        choices=["standard", "l2", "pca", "zca", "none"],
+        choices=["standard", "l2", "pca", "zca", "none", "pipeline"],
         default="l2",
-        help="Normalization method to use (default: l2)",
+        help="Normalization method (legacy) or 'pipeline' to use the 3-step pipeline.",
+    )
+    # Pipeline normalization options
+    parser.add_argument(
+        "--norm-center",
+        action="store_true",
+        help="Pipeline step 1: apply mean-centering (StandardScaler with_mean=True)",
+    )
+    parser.add_argument(
+        "--norm-no-center",
+        action="store_true",
+        help="Explicitly disable centering in pipeline (overrides --norm-center)",
+    )
+    parser.add_argument(
+        "--norm-scale",
+        action="store_true",
+        help="Pipeline step 1: scale to unit variance (StandardScaler with_std=True)",
+    )
+    parser.add_argument(
+        "--norm-no-scale",
+        action="store_true",
+        help="Explicitly disable scaling in pipeline (overrides --norm-scale)",
+    )
+    parser.add_argument(
+        "--norm-pca-components",
+        type=float,
+        default=0,
+        help="Pipeline step 2: PCA reduction. Int (#components) or float in (0,1] for variance retained. 0 disables.",
+    )
+    parser.add_argument(
+        "--norm-l2",
+        action="store_true",
+        help="Pipeline step 3: apply L2 normalization (enabled by default unless --norm-no-l2 is used)",
+    )
+    parser.add_argument(
+        "--norm-no-l2",
+        action="store_true",
+        help="Disable L2 normalization at the end of pipeline",
     )
 
     # Clustering algorithm options
@@ -1457,6 +1580,10 @@ def parse_arguments() -> ClusteringConfig:
         n_clusters=args.n_clusters,
         max_clusters=args.max_clusters,
         normalization_method=args.normalization_method,
+        norm_center=(True if args.norm_center else False) if not args.norm_no_center else False,
+        norm_scale=(True if args.norm_scale else False) if not args.norm_no_scale else False,
+        norm_pca_components=args.norm_pca_components,
+        norm_l2=False if args.norm_no_l2 else True,
         clustering_options=clustering_options,
         subsample=args.subsample,
         subsample_fraction=args.subsample_fraction,

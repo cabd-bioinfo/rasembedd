@@ -22,7 +22,7 @@ This toolkit provides a comprehensive pipeline for protein embedding analysis, i
 ### Clustering Algorithms
 - **K-means**: Efficient partitional clustering with initialization options
 - **Hierarchical**: Agglomerative clustering with multiple linkage criteria (ward, complete, average, single) and distance metrics
-- **DBSCAN**: Density-based clustering for discovering clusters of varying shapes
+- **DBSCAN**: Density-based clustering for discovering clusters of varying shapes (auto-parameter search for eps/min_samples when not specified)
 - **HDBSCAN**: Hierarchical density-based clustering with noise detection
 
 ### Dimensionality Reduction Methods
@@ -153,7 +153,7 @@ python clustering_evaluation.py embeddings.pkl data/metadata.tsv --methods kmean
 - **Automatic optimization**: Finds optimal number of clusters using multiple criteria
 - **Comprehensive evaluation**: 7+ clustering quality metrics including Adjusted Rand Score, V-Measure, Silhouette Score
 - **Statistical analysis**: Subsampling with significance testing to compare embedding methods
-- **Normalization options**: Standard, L2, PCA whitening, ZCA whitening, or none
+- **Normalization options**: Standard, L2, PCA whitening, ZCA whitening, Pipeline, or None
 - **Rich visualizations**: Cluster optimization plots, confusion matrices, significance heatmaps
 
 - See the [clustering evaluation documentation](README_clustering_evaluation.md) for detailed usage and options.
