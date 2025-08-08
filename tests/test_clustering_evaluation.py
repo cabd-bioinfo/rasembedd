@@ -265,6 +265,24 @@ class TestClusteringOptions:
         # HDBSCAN can have noise points (label -1)
         assert all(label >= -1 for label in labels)
 
+    def test_spectral_with_options(self, sample_embeddings):
+        """Test Spectral Clustering with custom options."""
+        engine = ClusteringEngine()
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        labels = engine.perform_clustering(
+            embeddings_array,
+            method="spectral",
+            n_clusters=3,
+            affinity="nearest_neighbors",
+            n_neighbors=3,
+            assign_labels="kmeans",
+        )
+
+        assert len(labels) == 5
+        assert len(np.unique(labels)) <= 3
+        assert all(label >= 0 for label in labels)
+
     def test_clustering_options_parameter_passing(self, sample_embeddings):
         """Test that clustering options are properly passed to algorithms."""
         engine = ClusteringEngine()
@@ -409,6 +427,19 @@ class TestClusteringEngine:
         assert len(labels) == 5
         # HDBSCAN can have noise points (label -1)
         assert all(label >= -1 for label in labels)
+
+    def test_perform_clustering_spectral(self, sample_embeddings):
+        """Test Spectral clustering."""
+        engine = ClusteringEngine()
+        embeddings_array = np.array(list(sample_embeddings.values()))
+
+        labels = engine.perform_clustering(
+            embeddings_array, method="spectral", n_clusters=2, affinity="rbf"
+        )
+
+        assert len(labels) == 5
+        assert len(np.unique(labels)) <= 2
+        assert all(label >= 0 for label in labels)
 
     def test_perform_clustering_invalid_method(self, sample_embeddings):
         """Test clustering with invalid method."""

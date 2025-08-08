@@ -7,7 +7,7 @@ A comprehensive tool for evaluating protein clustering based on embeddings. This
 The clustering evaluation script performs the following key tasks:
 
 1. Load protein embeddings from pickle files and metadata from TSV/CSV files
-2. Perform clustering using multiple algorithms (K-means, Hierarchical, DBSCAN, HDBSCAN)
+2. Perform clustering using multiple algorithms (K-means, Hierarchical, Spectral, DBSCAN, HDBSCAN)
 3. Optimize cluster numbers automatically or use user-specified values
 4. Evaluate clustering quality using multiple metrics against ground truth labels
 5. Generate comprehensive visualizations and statistical reports
@@ -18,6 +18,7 @@ The clustering evaluation script performs the following key tasks:
 ### Clustering Methods
 - K-means: Efficient partitional clustering with initialization options
 - Hierarchical: Agglomerative clustering with multiple linkage criteria (ward, complete, average, single) and distance metrics (euclidean, manhattan, cosine, etc.)
+- Spectral: Graph-based clustering using eigenvectors of an affinity matrix (rbf or nearest_neighbors); participates in K optimization
 - DBSCAN: Density-based clustering for discovering clusters of varying shapes; automatically searches eps/min_samples if not provided
 - HDBSCAN: Hierarchical density-based clustering with noise detection; evaluated once and reports the observed number of clusters (excluding noise)
 
@@ -38,6 +39,7 @@ The clustering evaluation script performs the following key tasks:
 
 ### Advanced Features
 - Automatic cluster optimization: Finds optimal number of clusters (K-means/Hierarchical)
+    - Also applies to Spectral Clustering
 - Subsampling analysis: Tests robustness across multiple random samples
 - Statistical testing: Compares different embedding methods with significance tests
 - Stratified subsampling: Maintains class proportions in samples
@@ -82,7 +84,7 @@ Specify clustering methods and parameters:
 python clustering_evaluation.py \
     embeddings/*.pkl \
     metadata/protein_metadata.tsv \
-    --methods kmeans hierarchical dbscan hdbscan \
+    --methods kmeans hierarchical spectral dbscan hdbscan \
     --max-clusters 20 \
     --normalization-method standard \
     --output-dir results/
@@ -140,6 +142,14 @@ python clustering_evaluation.py embeddings.pkl metadata.tsv \
     --methods kmeans \
     --kmeans-init random \
     --kmeans-max-iter 500
+
+# Spectral clustering with nearest-neighbors affinity
+python clustering_evaluation.py embeddings.pkl metadata.tsv \
+    --methods spectral \
+    --n-clusters 3 \
+    --spectral-affinity nearest_neighbors \
+    --spectral-n-neighbors 10 \
+    --spectral-assign-labels kmeans
 ```
 
 Run subsampling analysis:
@@ -184,6 +194,7 @@ python clustering_evaluation.py embeddings.pkl metadata.tsv \
 | --id-column | uniprot_id | Column name for protein IDs in metadata |
 | --label-column | Family.name | Column name for true labels in metadata |
 | --methods | kmeans hierarchical | Clustering methods: kmeans, hierarchical, dbscan, hdbscan |
+| --methods | kmeans hierarchical | Clustering methods: kmeans, hierarchical, spectral, dbscan, hdbscan |
 | --n-clusters | Auto-optimize | Number of clusters (fixed) |
 | --max-clusters | 15 | Maximum clusters for optimization |
 | --normalization-method | l2 | Normalization method: standard, l2, pca, zca, pipeline, none |
@@ -225,6 +236,14 @@ If either parameter is omitted, the script performs a small parameter search usi
 | --hdbscan-cluster-selection-epsilon | 0.0 | Distance threshold for cluster selection |
 
 HDBSCAN is evaluated once per configuration; the observed number of clusters (excluding noise points labeled as -1) is reported in the results.
+
+#### Spectral Clustering Parameters
+| Argument | Default | Description |
+|----------|---------|-------------|
+| --spectral-affinity | rbf | Affinity function: rbf, nearest_neighbors, precomputed, precomputed_nearest_neighbors |
+| --spectral-assign-labels | kmeans | Label assignment strategy: kmeans, discretize |
+| --spectral-n-neighbors | 10 | Number of neighbors for nearest_neighbors affinity |
+| --spectral-gamma | auto | RBF kernel coefficient (omit flag to use sklearn default) |
 
 #### Normalization Pipeline Options (when --normalization-method pipeline)
 | Argument | Description |
@@ -314,6 +333,7 @@ Common issues and tips:
 ### Algorithm Implementation
 - K-means: scikit-learn KMeans with configurable init and iterations
 - Hierarchical: Agglomerative clustering with configurable linkage and metrics
+- Spectral: scikit-learn SpectralClustering with configurable affinity and label assignment; optimized over K like K-means/Hierarchical
 - DBSCAN: Density-based clustering with eps/min_samples; auto-search when not provided
 - HDBSCAN: Hierarchical density-based clustering with noise detection
 
@@ -347,6 +367,7 @@ Common issues and tips:
 - HDBSCAN is evaluated once per configuration; reported cluster counts exclude noise.
 - Added a configurable normalization pipeline (center/scale → PCA → L2) with CLI flags.
 - Results include params_json and an audit file embedding_clustering_parameters.tsv.
+ - Added Spectral Clustering support (rbf or nearest_neighbors affinity), participates in K optimization and has dedicated CLI flags.
 
 ## Citation
 

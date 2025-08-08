@@ -26,7 +26,7 @@ import pandas as pd
 import seaborn as sns
 from joblib import Parallel, delayed
 from scipy.stats import ttest_ind, wilcoxon
-from sklearn.cluster import DBSCAN, AgglomerativeClustering, KMeans
+from sklearn.cluster import DBSCAN, AgglomerativeClustering, KMeans, SpectralClustering
 from sklearn.decomposition import PCA
 from sklearn.metrics import (
     adjusted_rand_score,
@@ -320,6 +320,16 @@ class ClusteringEngine:
             clusterer = hdbscan.HDBSCAN(
                 min_cluster_size=min_cluster_size, min_samples=min_samples, **kwargs
             )
+            labels = clusterer.fit_predict(embeddings)
+
+        elif method == "spectral":
+            # Spectral clustering requires n_clusters
+            if n_clusters is None:
+                n_clusters = 8
+            # Provide a default random_state for reproducibility unless explicitly set
+            if "random_state" not in kwargs:
+                kwargs["random_state"] = 42
+            clusterer = SpectralClustering(n_clusters=n_clusters, **kwargs)
             labels = clusterer.fit_predict(embeddings)
 
         else:
@@ -1148,7 +1158,7 @@ class ClusteringAnalyzer:
                 # Get method-specific options
                 method_options = self.config.clustering_options.get(method, {})
 
-                if self.config.n_clusters and method in ["kmeans", "hierarchical"]:
+                if self.config.n_clusters and method in ["kmeans", "hierarchical", "spectral"]:
                     cluster_labels = self.clustering_engine.perform_clustering(
                         embedding_matrix,
                         method=method,
@@ -1240,6 +1250,14 @@ class ClusteringAnalyzer:
                         "cluster_selection_epsilon": method_options.get(
                             "cluster_selection_epsilon"
                         ),
+                    }
+                elif method == "spectral":
+                    used_params = {
+                        "n_clusters": n_clusters,
+                        "affinity": method_options.get("affinity"),
+                        "assign_labels": method_options.get("assign_labels"),
+                        "n_neighbors": method_options.get("n_neighbors"),
+                        "gamma": method_options.get("gamma"),
                     }
 
                 results[method] = ClusteringResult(
@@ -1405,7 +1423,7 @@ def parse_arguments() -> ClusteringConfig:
         "--methods",
         nargs="+",
         default=["kmeans", "hierarchical"],
-        choices=["kmeans", "hierarchical", "dbscan", "hdbscan"],
+        choices=["kmeans", "hierarchical", "dbscan", "hdbscan", "spectral"],
         help="Clustering methods to use",
     )
     parser.add_argument(
@@ -1518,6 +1536,37 @@ def parse_arguments() -> ClusteringConfig:
         help="HDBSCAN cluster_selection_epsilon parameter (default: 0.0)",
     )
 
+    # Spectral Clustering parameters
+    parser.add_argument(
+        "--spectral-affinity",
+        choices=[
+            "rbf",
+            "nearest_neighbors",
+            "precomputed",
+            "precomputed_nearest_neighbors",
+        ],
+        default="rbf",
+        help="Spectral Clustering affinity (default: rbf)",
+    )
+    parser.add_argument(
+        "--spectral-assign-labels",
+        choices=["kmeans", "discretize"],
+        default="kmeans",
+        help="Spectral Clustering label assignment strategy (default: kmeans)",
+    )
+    parser.add_argument(
+        "--spectral-n-neighbors",
+        type=int,
+        default=10,
+        help="Number of neighbors for nearest_neighbors affinity (default: 10)",
+    )
+    parser.add_argument(
+        "--spectral-gamma",
+        type=float,
+        default=None,
+        help="Kernel coefficient for rbf affinity (default: auto)",
+    )
+
     parser.add_argument(
         "--subsample", type=int, default=0, help="Number of subsampling runs (0 to disable)"
     )
@@ -1553,6 +1602,13 @@ def parse_arguments() -> ClusteringConfig:
             "min_cluster_size": args.hdbscan_min_cluster_size,
             "min_samples": args.hdbscan_min_samples,
             "cluster_selection_epsilon": args.hdbscan_cluster_selection_epsilon,
+        },
+        "spectral": {
+            "affinity": args.spectral_affinity,
+            "assign_labels": args.spectral_assign_labels,
+            "n_neighbors": args.spectral_n_neighbors,
+            # Only include gamma if provided (None -> let sklearn decide)
+            **({"gamma": args.spectral_gamma} if args.spectral_gamma is not None else {}),
         },
     }
 
