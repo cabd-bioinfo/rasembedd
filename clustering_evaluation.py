@@ -53,6 +53,22 @@ except ImportError:
     print("Warning: colorcet not available. Using default matplotlib colors.")
 
 
+def convert_numpy_types(obj):
+    """Convert numpy types to native Python types for JSON serialization."""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    else:
+        return obj
+
+
 @dataclass
 class ClusteringConfig:
     """Configuration for clustering analysis."""
@@ -2380,7 +2396,7 @@ class ClusteringAnalyzer:
                 row = {"method": method, "n_clusters": result.n_clusters}
                 row.update(result.metrics)
                 # Flatten params into JSON string for readability
-                row["params_json"] = json.dumps(result.params)
+                row["params_json"] = json.dumps(convert_numpy_types(result.params))
                 results_df.append(row)
 
             results_df = pd.DataFrame(results_df)
@@ -2663,7 +2679,7 @@ def parse_arguments() -> ClusteringConfig:
     parser.add_argument(
         "--spectral-gamma",
         default="auto",
-        help="Kernel coefficient for rbf affinity. Options: 'auto' (optimized), 'default' (auto/None), or float value (default: auto)",
+        help="Kernel coefficient for rbf affinity. Options: 'auto' (optimized), 'default' (1.0), or float value (default: auto)",
     )
 
     parser.add_argument(
@@ -2821,17 +2837,15 @@ def parse_arguments() -> ClusteringConfig:
     if auto_n_neighbors:
         auto_params["spectral"]["n_neighbors"] = True
 
-    # Spectral gamma can be None (special case)
+    # Spectral gamma parameter (sklearn default is 1.0 for RBF kernel)
     if args.spectral_gamma == "auto":
-        spectral_params["gamma"] = None  # Let sklearn decide
+        spectral_params["gamma"] = 1.0  # Use sklearn default for optimization
         auto_params["spectral"]["gamma"] = True
     elif args.spectral_gamma == "default":
-        spectral_params["gamma"] = None  # sklearn default
+        spectral_params["gamma"] = 1.0  # sklearn default
     else:
         try:
-            spectral_params["gamma"] = (
-                float(args.spectral_gamma) if args.spectral_gamma != "None" else None
-            )
+            spectral_params["gamma"] = float(args.spectral_gamma)
         except ValueError:
             raise ValueError(f"Invalid gamma value: {args.spectral_gamma}")
 

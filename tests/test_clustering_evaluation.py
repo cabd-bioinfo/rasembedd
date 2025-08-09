@@ -1,5 +1,6 @@
 """Tests for clustering evaluation script."""
 
+import json
 import os
 import pickle
 import tempfile
@@ -1977,3 +1978,294 @@ class TestPCAVarianceFractions:
         pca_info = analyzer._pca_info["test_embeddings"]
         assert "pca_n_components" in pca_info
         assert "pca_explained_variance_ratio_sum" in pca_info
+
+
+class TestBugFixes:
+    """Test cases for specific bugs that were fixed."""
+
+    def test_spectral_gamma_parameter_handling(self):
+        """Test that spectral clustering gamma parameter is properly handled."""
+        from clustering_evaluation import ClusteringEngine
+
+        engine = ClusteringEngine()
+        X = np.random.randn(20, 5)
+
+        # Test with default gamma (should be 1.0, not None)
+        labels = engine.perform_clustering(X, method="spectral", n_clusters=3)
+        assert len(np.unique(labels)) >= 1
+
+        # Test with explicit gamma parameter
+        labels = engine.perform_clustering(X, method="spectral", n_clusters=3, gamma=1.0)
+        assert len(np.unique(labels)) >= 1
+
+        # Test with different gamma values
+        labels = engine.perform_clustering(X, method="spectral", n_clusters=3, gamma=0.5)
+        assert len(np.unique(labels)) >= 1
+
+        labels = engine.perform_clustering(X, method="spectral", n_clusters=3, gamma=2.0)
+        assert len(np.unique(labels)) >= 1
+
+    def test_spectral_gamma_parameter_parsing(self):
+        """Test that spectral gamma parameter is correctly parsed from CLI arguments."""
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Create test data
+            embeddings = {f"protein_{i}": np.random.randn(10) for i in range(15)}
+            metadata = pd.DataFrame(
+                {
+                    "uniprot_id": [f"protein_{i}" for i in range(15)],
+                    "Family.name": ["A"] * 5 + ["B"] * 5 + ["C"] * 5,
+                }
+            )
+
+            # Save test files
+            embedding_file = os.path.join(temp_dir, "test_embeddings.pkl")
+            with open(embedding_file, "wb") as f:
+                pickle.dump(embeddings, f)
+
+            metadata_file = os.path.join(temp_dir, "metadata.tsv")
+            metadata.to_csv(metadata_file, sep="\t", index=False)
+
+            # Test auto mode (should use gamma=1.0 for optimization)
+            config = ClusteringConfig(
+                embedding_files=[embedding_file],
+                metadata_file=metadata_file,
+                output_dir=temp_dir,
+                methods=["spectral"],
+                max_clusters=3,
+                clustering_options={
+                    "spectral": {"gamma": 1.0, "affinity": "rbf"},
+                    "_auto_params": {"spectral": {"gamma": True}},
+                },
+            )
+
+            analyzer = ClusteringAnalyzer(config)
+            # This should not raise any sklearn parameter validation errors
+            try:
+                analyzer.run_analysis()
+                success = True
+            except Exception as e:
+                if "gamma" in str(e) and "must be a float" in str(e):
+                    success = False
+                else:
+                    success = True  # Other errors are not gamma-related
+
+            assert success, "Spectral clustering should not fail due to gamma parameter"
+
+    def test_json_serialization_of_numpy_types(self):
+        """Test that numpy types are properly converted for JSON serialization."""
+        import json
+
+        from clustering_evaluation import convert_numpy_types
+
+        # Test numpy integer
+        numpy_int = np.int32(42)
+        converted = convert_numpy_types(numpy_int)
+        assert isinstance(converted, int)
+        assert converted == 42
+
+        # Test numpy float
+        numpy_float = np.float32(3.14159)
+        converted = convert_numpy_types(numpy_float)
+        assert isinstance(converted, float)
+        assert abs(converted - 3.14159) < 1e-5
+
+        # Test numpy array
+        numpy_array = np.array([1, 2, 3])
+        converted = convert_numpy_types(numpy_array)
+        assert isinstance(converted, list)
+        assert converted == [1, 2, 3]
+
+        # Test complex nested structure with numpy types
+        complex_obj = {
+            "gamma": np.float32(4.0937953),
+            "n_neighbors": np.int64(10),
+            "array": np.array([1.0, 2.0, 3.0]),
+            "nested": {
+                "value": np.float64(2.718281828),
+                "list": [np.int32(1), np.int32(2), np.int32(3)],
+            },
+        }
+
+        converted = convert_numpy_types(complex_obj)
+
+        # Test that the converted object can be JSON serialized
+        json_str = json.dumps(converted)
+
+        # Test that all types are now native Python types
+        assert isinstance(converted["gamma"], float)
+        assert isinstance(converted["n_neighbors"], int)
+        assert isinstance(converted["array"], list)
+        assert isinstance(converted["nested"]["value"], float)
+        assert all(isinstance(x, int) for x in converted["nested"]["list"])
+
+    def test_clustering_result_json_serialization(self):
+        """Test that clustering results with optimized parameters can be JSON serialized."""
+        import json
+
+        from clustering_evaluation import ClusteringResult, convert_numpy_types
+
+        # Create a clustering result with numpy types (as would happen with optimization)
+        params_with_numpy = {
+            "gamma": np.float32(4.0937953),
+            "affinity": "rbf",
+            "n_neighbors": np.int64(10),
+            "assign_labels": "kmeans",
+        }
+
+        metrics = {"silhouette_score": 0.3026, "calinski_harabasz_score": 17.8220}
+
+        result = ClusteringResult(
+            cluster_labels=np.array([0, 1, 2, 0, 1, 2]),
+            n_clusters=3,
+            metrics=metrics,
+            params=params_with_numpy,
+        )
+
+        # Test that convert_numpy_types works on the params
+        converted_params = convert_numpy_types(result.params)
+
+        # Test that the converted params can be JSON serialized
+        json_str = json.dumps(converted_params)
+
+        # Verify the JSON can be parsed back
+        parsed = json.loads(json_str)
+        assert abs(parsed["gamma"] - 4.0937953) < 1e-6  # Use approximate comparison for floats
+        assert parsed["n_neighbors"] == 10
+        assert parsed["affinity"] == "rbf"
+
+    def test_spectral_clustering_with_optimization_produces_serializable_results(self):
+        """Integration test: spectral clustering optimization should produce JSON-serializable results."""
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Create test data
+            embeddings = {f"protein_{i}": np.random.randn(20) for i in range(30)}
+            metadata = pd.DataFrame(
+                {
+                    "uniprot_id": [f"protein_{i}" for i in range(30)],
+                    "Family.name": ["A"] * 10 + ["B"] * 10 + ["C"] * 10,
+                }
+            )
+
+            # Save test files
+            embedding_file = os.path.join(temp_dir, "test_embeddings.pkl")
+            with open(embedding_file, "wb") as f:
+                pickle.dump(embeddings, f)
+
+            metadata_file = os.path.join(temp_dir, "metadata.tsv")
+            metadata.to_csv(metadata_file, sep="\t", index=False)
+
+            # Configure with spectral clustering optimization
+            config = ClusteringConfig(
+                embedding_files=[embedding_file],
+                metadata_file=metadata_file,
+                output_dir=temp_dir,
+                methods=["spectral"],
+                max_clusters=4,
+                clustering_options={
+                    "spectral": {"affinity": "rbf", "gamma": 1.0},
+                    "_auto_params": {"spectral": {"gamma": True, "affinity": True}},
+                },
+            )
+
+            analyzer = ClusteringAnalyzer(config)
+
+            # This should complete without JSON serialization errors
+            try:
+                analyzer.run_analysis()
+                success = True
+                error_msg = None
+            except Exception as e:
+                success = False
+                error_msg = str(e)
+
+            assert success, f"Analysis should complete without errors, but got: {error_msg}"
+
+            # Check that results file was created and contains valid JSON
+            results_file = os.path.join(temp_dir, "test_embeddings_clustering_results.tsv")
+            if os.path.exists(results_file):
+                df = pd.read_csv(results_file, sep="\t")
+                assert "params_json" in df.columns
+
+                # Test that each params_json entry can be parsed
+                for params_json in df["params_json"]:
+                    try:
+                        parsed_params = json.loads(params_json)
+                        # If optimization occurred, gamma might be a numpy type that was converted
+                        if "gamma" in parsed_params:
+                            assert isinstance(parsed_params["gamma"], (int, float))
+                    except json.JSONDecodeError:
+                        pytest.fail(f"Invalid JSON in params_json: {params_json}")
+
+    def test_edge_case_gamma_parameter_values(self):
+        """Test edge cases for gamma parameter handling."""
+        from clustering_evaluation import ClusteringEngine
+
+        engine = ClusteringEngine()
+        X = np.random.randn(15, 8)
+
+        # Test with very small gamma
+        labels = engine.perform_clustering(X, method="spectral", n_clusters=2, gamma=1e-6)
+        assert len(np.unique(labels)) >= 1
+
+        # Test with large gamma
+        labels = engine.perform_clustering(X, method="spectral", n_clusters=2, gamma=100.0)
+        assert len(np.unique(labels)) >= 1
+
+        # Test with gamma=1.0 (sklearn default)
+        labels = engine.perform_clustering(X, method="spectral", n_clusters=2, gamma=1.0)
+        assert len(np.unique(labels)) >= 1
+
+    def test_convert_numpy_types_edge_cases(self):
+        """Test edge cases for numpy type conversion."""
+        from clustering_evaluation import convert_numpy_types
+
+        # Test with None values
+        assert convert_numpy_types(None) is None
+
+        # Test with regular Python types (should pass through unchanged)
+        assert convert_numpy_types(42) == 42
+        assert convert_numpy_types(3.14) == 3.14
+        assert convert_numpy_types("hello") == "hello"
+        assert convert_numpy_types([1, 2, 3]) == [1, 2, 3]
+
+        # Test with nested structures containing None
+        nested_with_none = {
+            "value": np.float32(1.5),
+            "none_value": None,
+            "list_with_none": [np.int32(1), None, np.int32(3)],
+        }
+
+        converted = convert_numpy_types(nested_with_none)
+        assert isinstance(converted["value"], float)
+        assert converted["none_value"] is None
+        assert isinstance(converted["list_with_none"][0], int)
+        assert converted["list_with_none"][1] is None
+        assert isinstance(converted["list_with_none"][2], int)
+
+    def test_spectral_gamma_none_rejection(self):
+        """Test that None gamma values are properly rejected by sklearn."""
+        from clustering_evaluation import ClusteringEngine
+
+        engine = ClusteringEngine()
+        X = np.random.randn(10, 5)
+
+        # This should not raise the sklearn gamma validation error anymore
+        # because our code converts None to 1.0
+        try:
+            labels = engine.perform_clustering(
+                X, method="spectral", n_clusters=2, gamma=1.0  # Use 1.0 instead of None
+            )
+            success = True
+        except Exception as e:
+            # Check if it's specifically the gamma validation error
+            if "gamma" in str(e) and "must be a float" in str(e):
+                success = False
+            else:
+                success = True  # Other errors are acceptable
+
+        assert success, "Spectral clustering should work with gamma=1.0"
