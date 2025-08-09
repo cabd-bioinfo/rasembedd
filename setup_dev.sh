@@ -3,6 +3,20 @@
 
 echo "🚀 Setting up development environment..."
 
+# Check if we have basic requirements
+echo "🔍 Checking requirements..."
+if command -v python &> /dev/null; then
+    python check_requirements.py
+    if [ $? -ne 0 ]; then
+        echo "⚠️  Missing some requirements. Installing them now..."
+        pip install -r requirements.txt
+        pip install -r requirements_clustering.txt
+    fi
+else
+    echo "❌ Python not found. Please install Python 3.7+ first."
+    exit 1
+fi
+
 # Install test requirements (includes pre-commit)
 echo "📦 Installing test requirements..."
 pip install -r requirements_test.txt

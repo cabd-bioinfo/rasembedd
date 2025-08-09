@@ -65,6 +65,7 @@ class ClusteringConfig:
     methods: List[str] = None
     n_clusters: Optional[int] = None
     max_clusters: int = 15
+    k_selection_metric: str = "silhouette"
     normalization_method: str = "l2"
     # Normalization pipeline options (optional; used when normalization_method == 'pipeline' or any is set)
     norm_center: bool = False
@@ -246,14 +247,19 @@ class EmbeddingNormalizer:
         pca_components: float | int = 0,
         l2: bool = True,
         random_state: int = 42,
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, dict]:
         """Three-step normalization pipeline.
 
         1) Standard normalization with optional centering and scaling
         2) PCA dimensionality reduction (components=int or variance in (0,1]); 0 disables PCA
         3) Optional L2 per-sample normalization
+
+        Returns:
+            tuple: (normalized_embeddings, info_dict)
+            info_dict contains PCA information like n_components_ and explained_variance_ratio_
         """
         X = embeddings
+        info = {}
 
         # Step 1: Standardization
         if center or scale:
@@ -277,14 +283,28 @@ class EmbeddingNormalizer:
                 else:  # pca_components == 1.0 (keep all components)
                     n_components = None
 
+            # Cap integer components at maximum possible value to avoid errors
+            if isinstance(n_components, int):
+                max_components = min(X.shape[0] - 1, X.shape[1])  # -1 for degrees of freedom
+                if n_components > max_components:
+                    print(
+                        f"Note: Reducing PCA components from {n_components} to {max_components} (max possible with {X.shape[0]} samples)"
+                    )
+                    n_components = max_components
+
             pca = PCA(n_components=n_components, random_state=random_state)
             X = pca.fit_transform(X)
+
+            # Store PCA information
+            info["pca_n_components"] = pca.n_components_
+            info["pca_explained_variance_ratio_sum"] = pca.explained_variance_ratio_.sum()
+            info["pca_requested_components"] = pca_components
 
         # Step 3: L2 normalization
         if l2:
             X = normalize(X, norm="l2", axis=1)
 
-        return X
+        return X, info
 
 
 class ClusteringEngine:
@@ -296,39 +316,42 @@ class ClusteringEngine:
     ) -> np.ndarray:
         """Perform clustering using specified method."""
 
+        # Filter out auto_params information before passing to clustering algorithms
+        clustering_kwargs = {k: v for k, v in kwargs.items() if k != "_auto_params"}
+
         if method == "kmeans":
             if n_clusters is None:
                 n_clusters = 8  # Default
-            # Set default random_state if not provided in kwargs
-            if "random_state" not in kwargs:
-                kwargs["random_state"] = 42
-            clusterer = KMeans(n_clusters=n_clusters, **kwargs)
+            # Set default random_state if not provided in clustering_kwargs
+            if "random_state" not in clustering_kwargs:
+                clustering_kwargs["random_state"] = 42
+            clusterer = KMeans(n_clusters=n_clusters, **clustering_kwargs)
             labels = clusterer.fit_predict(embeddings)
 
         elif method == "hierarchical":
             if n_clusters is None:
                 n_clusters = 8
             # Validate ward linkage with euclidean metric
-            linkage = kwargs.get("linkage", "complete")
-            metric = kwargs.get("metric", "euclidean")
+            linkage = clustering_kwargs.get("linkage", "complete")
+            metric = clustering_kwargs.get("metric", "euclidean")
             if linkage == "ward" and metric != "euclidean":
                 raise ValueError("Ward linkage requires euclidean metric")
-            clusterer = AgglomerativeClustering(n_clusters=n_clusters, **kwargs)
+            clusterer = AgglomerativeClustering(n_clusters=n_clusters, **clustering_kwargs)
             labels = clusterer.fit_predict(embeddings)
 
         elif method == "dbscan":
-            # Extract eps and min_samples, remove from kwargs to avoid duplication
-            eps = kwargs.pop("eps", 0.5)
-            min_samples = kwargs.pop("min_samples", 5)
-            clusterer = DBSCAN(eps=eps, min_samples=min_samples, **kwargs)
+            # Extract eps and min_samples, remove from clustering_kwargs to avoid duplication
+            eps = clustering_kwargs.pop("eps", 0.5)
+            min_samples = clustering_kwargs.pop("min_samples", 5)
+            clusterer = DBSCAN(eps=eps, min_samples=min_samples, **clustering_kwargs)
             labels = clusterer.fit_predict(embeddings)
 
         elif method == "hdbscan":
-            # Extract min_cluster_size and min_samples, remove from kwargs to avoid duplication
-            min_cluster_size = kwargs.pop("min_cluster_size", 5)
-            min_samples = kwargs.pop("min_samples", None)  # HDBSCAN default is None
+            # Extract min_cluster_size and min_samples, remove from clustering_kwargs to avoid duplication
+            min_cluster_size = clustering_kwargs.pop("min_cluster_size", 5)
+            min_samples = clustering_kwargs.pop("min_samples", None)  # HDBSCAN default is None
             clusterer = hdbscan.HDBSCAN(
-                min_cluster_size=min_cluster_size, min_samples=min_samples, **kwargs
+                min_cluster_size=min_cluster_size, min_samples=min_samples, **clustering_kwargs
             )
             labels = clusterer.fit_predict(embeddings)
 
@@ -337,9 +360,9 @@ class ClusteringEngine:
             if n_clusters is None:
                 n_clusters = 8
             # Provide a default random_state for reproducibility unless explicitly set
-            if "random_state" not in kwargs:
-                kwargs["random_state"] = 42
-            clusterer = SpectralClustering(n_clusters=n_clusters, **kwargs)
+            if "random_state" not in clustering_kwargs:
+                clustering_kwargs["random_state"] = 42
+            clusterer = SpectralClustering(n_clusters=n_clusters, **clustering_kwargs)
             labels = clusterer.fit_predict(embeddings)
 
         else:
@@ -349,6 +372,777 @@ class ClusteringEngine:
         print(f"Clustering with {method}: found {n_clusters_found} clusters")
 
         return labels
+
+    @staticmethod
+    def _calculate_inertia(embeddings: np.ndarray, cluster_labels: np.ndarray) -> float:
+        """Calculate within-cluster sum of squares (inertia) for elbow method."""
+        inertia = 0.0
+        for cluster_id in np.unique(cluster_labels):
+            if cluster_id == -1:  # Skip noise points
+                continue
+            cluster_points = embeddings[cluster_labels == cluster_id]
+            if len(cluster_points) > 0:
+                centroid = np.mean(cluster_points, axis=0)
+                inertia += np.sum((cluster_points - centroid) ** 2)
+        return inertia
+
+    @staticmethod
+    def _calculate_wcss(embeddings: np.ndarray, cluster_labels: np.ndarray) -> float:
+        """Calculate within-cluster sum of squares for hierarchical clustering."""
+        return ClusteringEngine._calculate_inertia(embeddings, cluster_labels)
+
+    @staticmethod
+    def _find_elbow_point(k_values: List[int], inertia_values: List[float]) -> int:
+        """Find elbow point using the kneedle algorithm approximation."""
+        if len(k_values) < 3:
+            return k_values[0] if k_values else 2
+
+        # Normalize the data
+        k_norm = np.array(k_values, dtype=float)
+        inertia_norm = np.array(inertia_values, dtype=float)
+
+        # Normalize to [0,1] range
+        k_norm = (k_norm - k_norm.min()) / (k_norm.max() - k_norm.min())
+        inertia_norm = (inertia_norm - inertia_norm.min()) / (
+            inertia_norm.max() - inertia_norm.min()
+        )
+
+        # Calculate the distance from each point to the line connecting first and last points
+        distances = []
+        for i in range(len(k_norm)):
+            # Line from first to last point: y = mx + b
+            x1, y1 = k_norm[0], inertia_norm[0]
+            x2, y2 = k_norm[-1], inertia_norm[-1]
+
+            # Distance from point to line
+            xi, yi = k_norm[i], inertia_norm[i]
+            if x2 != x1:  # Avoid division by zero
+                distance = abs((y2 - y1) * xi - (x2 - x1) * yi + x2 * y1 - y2 * x1) / np.sqrt(
+                    (y2 - y1) ** 2 + (x2 - x1) ** 2
+                )
+            else:
+                distance = abs(xi - x1)
+            distances.append(distance)
+
+        # Find the point with maximum distance (elbow)
+        elbow_idx = np.argmax(distances)
+        return k_values[elbow_idx]
+
+    def _optimize_spectral_clustering(
+        self,
+        embeddings: np.ndarray,
+        true_labels: np.ndarray,
+        max_clusters: int,
+        clustering_options: Dict[str, Any],
+    ) -> Tuple[Dict[str, int], Dict[int, Dict[str, float]]]:
+        """Optimize spectral clustering parameters and find optimal k.
+
+        Uses auto parameter information to determine which parameters to optimize.
+        """
+
+        # Get auto parameter information from clustering_options
+        auto_params = clustering_options.get("_auto_params", {}).get("spectral", {})
+
+        # Default values from sklearn
+        sklearn_defaults = {
+            "affinity": "rbf",
+            "assign_labels": "kmeans",
+            "n_neighbors": 10,
+            "gamma": None,
+        }
+
+        # Determine which parameters to optimize based on auto_params
+        optimize_affinity = auto_params.get("affinity", False)
+        optimize_assign_labels = auto_params.get("assign_labels", False)
+        optimize_n_neighbors = auto_params.get("n_neighbors", False)
+        optimize_gamma = auto_params.get("gamma", False)
+
+        # Get fixed values (user-provided parameters or defaults for non-auto)
+        fixed_affinity = clustering_options.get("affinity", sklearn_defaults["affinity"])
+        fixed_assign_labels = clustering_options.get(
+            "assign_labels", sklearn_defaults["assign_labels"]
+        )
+        fixed_n_neighbors = clustering_options.get("n_neighbors", sklearn_defaults["n_neighbors"])
+        fixed_gamma = clustering_options.get("gamma", sklearn_defaults["gamma"])
+
+        # Build candidate parameter combinations (only for parameters not fixed by user)
+        n = len(embeddings)
+
+        # Affinity candidates
+        if optimize_affinity:
+            candidate_affinities = ["rbf", "nearest_neighbors"]
+        else:
+            candidate_affinities = [fixed_affinity]
+
+        # Gamma candidates for RBF (only if not fixed by user)
+        if optimize_gamma and (optimize_affinity or fixed_affinity == "rbf"):
+            candidate_gammas = [None]  # sklearn auto
+            feature_variance = np.var(embeddings, axis=0).mean()
+            if feature_variance > 0:
+                scale = 1.0 / (2 * feature_variance)
+                candidate_gammas.extend([scale * f for f in [0.5, 1.0, 2.0]])
+        else:
+            candidate_gammas = [fixed_gamma]
+
+        # n_neighbors candidates (only if not fixed by user)
+        if optimize_n_neighbors:
+            candidate_n_neighbors = [10, max(5, min(20, int(0.1 * n)))]
+            candidate_n_neighbors = sorted(set(candidate_n_neighbors))
+        else:
+            candidate_n_neighbors = [fixed_n_neighbors]
+
+        # assign_labels candidates (only if not fixed by user)
+        if optimize_assign_labels:
+            candidate_assign_labels = ["kmeans"]  # Focus on the more reliable option
+        else:
+            candidate_assign_labels = [fixed_assign_labels]
+
+        # Print optimization strategy
+        optimizing = []
+        if optimize_affinity:
+            optimizing.append("affinity")
+        if optimize_gamma:
+            optimizing.append("gamma")
+        if optimize_n_neighbors:
+            optimizing.append("n_neighbors")
+        if optimize_assign_labels:
+            optimizing.append("assign_labels")
+
+        if optimizing:
+            print(f"  Optimizing spectral parameters: {', '.join(optimizing)}")
+        else:
+            print("  Using user-provided spectral parameters (no optimization)")
+            return self._simple_k_optimization_spectral(
+                embeddings, true_labels, max_clusters, clustering_options
+            )
+
+        # k values to test
+        max_possible_clusters = min(max_clusters + 1, len(embeddings))
+        if max_possible_clusters <= 2:
+            cluster_range = [2]
+        else:
+            cluster_range = range(2, max_possible_clusters)
+
+        best_score = -np.inf
+        best_params = None
+        metrics_by_k = {}
+        all_results = {}  # Store all parameter combinations
+
+        # Grid search over parameter combinations
+        for affinity in candidate_affinities:
+            for assign_labels in candidate_assign_labels:
+
+                if affinity == "rbf":
+                    gamma_candidates = candidate_gammas
+                    n_neighbors_candidates = [10]  # Not used for RBF, placeholder value
+                else:  # nearest_neighbors
+                    gamma_candidates = [None]  # Not used for nearest_neighbors
+                    n_neighbors_candidates = candidate_n_neighbors
+
+                for gamma in gamma_candidates:
+                    for n_neighbors in n_neighbors_candidates:
+
+                        # Build parameter dict
+                        params = {
+                            "affinity": affinity,
+                            "assign_labels": assign_labels,
+                        }
+                        if affinity == "rbf" and gamma is not None:
+                            params["gamma"] = gamma
+                        elif affinity == "nearest_neighbors":
+                            params["n_neighbors"] = n_neighbors
+
+                        # Test this parameter combination across different k values
+                        param_best_score = -np.inf
+                        param_best_k = 2
+
+                        for k in cluster_range:
+                            try:
+                                cluster_labels = self.perform_clustering(
+                                    embeddings, method="spectral", n_clusters=k, **params
+                                )
+                                metrics = self.evaluate_clustering(
+                                    cluster_labels, true_labels, embeddings
+                                )
+
+                                # Add inertia for elbow method
+                                inertia = self._calculate_inertia(embeddings, cluster_labels)
+                                metrics["inertia"] = inertia
+
+                                # Score using only internal metrics
+                                validity = 1 if len(np.unique(cluster_labels)) >= 2 else 0
+                                silhouette = max(metrics.get("silhouette_score", -1.0), -1.0)
+                                calinski = metrics.get("calinski_harabasz_score", 0.0)
+                                davies_bouldin = metrics.get("davies_bouldin_score", float("inf"))
+
+                                score = (
+                                    validity * 2.0
+                                    + silhouette * 1.0
+                                    + min(calinski / 1000.0, 1.0)
+                                    - min(davies_bouldin / 10.0, 1.0)
+                                )
+
+                                # Track best for this parameter combination
+                                if score > param_best_score:
+                                    param_best_score = score
+                                    param_best_k = k
+
+                                # Store metrics (will be overwritten for each k, but that's fine)
+                                metrics_by_k[k] = metrics
+
+                                # Track global best
+                                if score > best_score:
+                                    best_score = score
+                                    best_params = (params.copy(), k)
+
+                            except Exception as e:
+                                print(
+                                    f"Spectral clustering failed with params {params}, k={k}: {e}"
+                                )
+                                continue
+
+                        # Store this parameter combination's best result
+                        param_key = f"{affinity}_{assign_labels}_{gamma}_{n_neighbors}"
+                        all_results[param_key] = (params, param_best_k, param_best_score)
+
+        if best_params is None:
+            # Fallback to simple k optimization with default parameters
+            print(
+                "Warning: Spectral parameter optimization failed, falling back to k optimization only"
+            )
+            return self._simple_k_optimization_spectral(
+                embeddings, true_labels, max_clusters, clustering_options
+            )
+
+        # Update clustering_options with best parameters
+        best_param_dict, best_k_value = best_params
+        clustering_options.update(best_param_dict)
+
+        # Create best_k dict with the optimal k for each metric selection method
+        # Since we optimized globally, use the same k for all methods
+        best_k = {
+            "silhouette": best_k_value,
+            "calinski_harabasz": best_k_value,
+            "davies_bouldin": best_k_value,
+            "elbow": best_k_value,
+        }
+
+        # If we have inertia values, also compute elbow method
+        if metrics_by_k and any("inertia" in metrics_by_k[k] for k in metrics_by_k):
+            k_values = sorted([k for k in metrics_by_k.keys() if "inertia" in metrics_by_k[k]])
+            if len(k_values) >= 3:
+                inertia_values = [metrics_by_k[k]["inertia"] for k in k_values]
+                elbow_k = self._find_elbow_point(k_values, inertia_values)
+                best_k["elbow"] = elbow_k
+
+        print(f"Best spectral parameters: {best_param_dict}, k={best_k_value}")
+        return best_k, metrics_by_k
+
+    def _simple_k_optimization_spectral(
+        self,
+        embeddings: np.ndarray,
+        true_labels: np.ndarray,
+        max_clusters: int,
+        clustering_options: Dict[str, Any],
+    ) -> Tuple[Dict[str, int], Dict[int, Dict[str, float]]]:
+        """Fallback: simple k optimization for spectral clustering with default parameters."""
+
+        max_possible_clusters = min(max_clusters + 1, len(embeddings))
+        if max_possible_clusters <= 2:
+            cluster_range = [2]
+        else:
+            cluster_range = range(2, max_possible_clusters)
+
+        metrics_by_k = {}
+
+        for k in cluster_range:
+            try:
+                cluster_labels = self.perform_clustering(
+                    embeddings, method="spectral", n_clusters=k, **clustering_options
+                )
+                metrics = self.evaluate_clustering(cluster_labels, true_labels, embeddings)
+
+                # Add inertia for elbow method
+                inertia = self._calculate_inertia(embeddings, cluster_labels)
+                metrics["inertia"] = inertia
+
+                metrics_by_k[k] = metrics
+            except Exception as e:
+                print(f"Spectral clustering failed with k={k}: {e}")
+                continue
+
+        if not metrics_by_k:
+            # Last resort - just return something
+            best_k = {"silhouette": 2, "calinski_harabasz": 2, "davies_bouldin": 2, "elbow": 2}
+            metrics_by_k = {
+                2: {
+                    "silhouette_score": 0,
+                    "calinski_harabasz_score": 0,
+                    "davies_bouldin_score": float("inf"),
+                }
+            }
+            return best_k, metrics_by_k
+
+        # Find best k for different metrics
+        best_k = {}
+        best_k["silhouette"] = max(cluster_range, key=lambda k: metrics_by_k[k]["silhouette_score"])
+        best_k["calinski_harabasz"] = max(
+            cluster_range, key=lambda k: metrics_by_k[k]["calinski_harabasz_score"]
+        )
+        best_k["davies_bouldin"] = min(
+            cluster_range, key=lambda k: metrics_by_k[k]["davies_bouldin_score"]
+        )
+
+        # Add elbow method
+        if any("inertia" in metrics_by_k[k] for k in cluster_range):
+            inertia_values = [metrics_by_k[k].get("inertia", 0) for k in cluster_range]
+            if any(inertia_values):
+                best_k["elbow"] = self._find_elbow_point(list(cluster_range), inertia_values)
+            else:
+                best_k["elbow"] = cluster_range[0]
+
+        return best_k, metrics_by_k
+
+    def _optimize_hierarchical_clustering(
+        self,
+        embeddings: np.ndarray,
+        true_labels: np.ndarray,
+        max_clusters: int,
+        clustering_options: Dict[str, Any],
+    ) -> Tuple[Dict[str, int], Dict[int, Dict[str, float]]]:
+        """Optimize hierarchical clustering by testing different linkage/metric combinations and k values.
+
+        Uses auto parameter information to determine which parameters to optimize.
+        """
+
+        # Get auto parameter information from clustering_options
+        auto_params = clustering_options.get("_auto_params", {}).get("hierarchical", {})
+
+        # Default values from sklearn
+        sklearn_defaults = {"linkage": "complete", "metric": "euclidean"}
+
+        # Determine which parameters to optimize based on auto_params
+        optimize_linkage = auto_params.get("linkage", False)
+        optimize_metric = auto_params.get("metric", False)
+
+        # Get fixed values (user-provided parameters or defaults for non-auto)
+        fixed_linkage = clustering_options.get("linkage", sklearn_defaults["linkage"])
+        fixed_metric = clustering_options.get("metric", sklearn_defaults["metric"])
+
+        # Build candidate parameter combinations (only for parameters in auto mode)
+        if optimize_linkage:
+            candidate_linkages = ["ward", "complete", "average", "single"]
+        else:
+            candidate_linkages = [fixed_linkage]
+
+        if optimize_metric:
+            # For ward linkage, only euclidean is valid
+            candidate_metrics = ["euclidean", "manhattan", "cosine"]
+        else:
+            candidate_metrics = [fixed_metric]
+
+        # Print optimization strategy
+        optimizing = []
+        if optimize_linkage:
+            optimizing.append("linkage")
+        if optimize_metric:
+            optimizing.append("metric")
+
+        if optimizing:
+            print(f"  Optimizing hierarchical parameters: {', '.join(optimizing)}")
+        else:
+            print("  Using user-provided hierarchical parameters (no optimization)")
+            return self._simple_k_optimization_hierarchical(
+                embeddings, true_labels, max_clusters, clustering_options
+            )
+
+        # k values to test
+        max_possible_clusters = min(max_clusters + 1, len(embeddings))
+        if max_possible_clusters <= 2:
+            cluster_range = [2]
+        else:
+            cluster_range = range(2, max_possible_clusters)
+
+        best_score = -np.inf
+        best_params = None
+        metrics_by_k = {}
+
+        # Grid search over parameter combinations
+        for linkage in candidate_linkages:
+            for metric in candidate_metrics:
+
+                # Ward linkage only works with euclidean metric
+                if linkage == "ward" and metric != "euclidean":
+                    continue
+
+                # Build parameter dict
+                params = {
+                    "linkage": linkage,
+                    "metric": metric,
+                }
+
+                # Test this parameter combination across different k values
+                param_best_score = -np.inf
+                param_best_k = 2
+
+                for k in cluster_range:
+                    try:
+                        cluster_labels = self.perform_clustering(
+                            embeddings, method="hierarchical", n_clusters=k, **params
+                        )
+                        metrics = self.evaluate_clustering(cluster_labels, true_labels, embeddings)
+
+                        # Add inertia for elbow method
+                        inertia = self._calculate_wcss(embeddings, cluster_labels)
+                        metrics["inertia"] = inertia
+
+                        # Score using only internal metrics
+                        validity = 1 if len(np.unique(cluster_labels)) >= 2 else 0
+                        silhouette = max(metrics.get("silhouette_score", -1.0), -1.0)
+                        calinski = metrics.get("calinski_harabasz_score", 0.0)
+                        davies_bouldin = metrics.get("davies_bouldin_score", float("inf"))
+
+                        score = (
+                            validity * 2.0
+                            + silhouette * 1.0
+                            + min(calinski / 1000.0, 1.0)
+                            - min(davies_bouldin / 10.0, 1.0)
+                        )
+
+                        # Track best for this parameter combination
+                        if score > param_best_score:
+                            param_best_score = score
+                            param_best_k = k
+
+                        # Store metrics (will be overwritten for each k, but that's fine)
+                        metrics_by_k[k] = metrics
+
+                        # Track global best
+                        if score > best_score:
+                            best_score = score
+                            best_params = (params.copy(), k)
+
+                    except Exception as e:
+                        print(f"Hierarchical clustering failed with params {params}, k={k}: {e}")
+                        continue
+
+        if best_params is None:
+            # Fallback to simple k optimization with default parameters
+            print(
+                "Warning: Hierarchical parameter optimization failed, falling back to k optimization only"
+            )
+            return self._simple_k_optimization_hierarchical(
+                embeddings, true_labels, max_clusters, clustering_options
+            )
+
+        # Update clustering_options with best parameters
+        best_param_dict, best_k_value = best_params
+        clustering_options.update(best_param_dict)
+
+        # Create best_k dict with the optimal k for each metric selection method
+        best_k = {
+            "silhouette": best_k_value,
+            "calinski_harabasz": best_k_value,
+            "davies_bouldin": best_k_value,
+            "elbow": best_k_value,
+        }
+
+        # If we have inertia values, also compute elbow method
+        if metrics_by_k and any("inertia" in metrics_by_k[k] for k in metrics_by_k):
+            k_values = sorted([k for k in metrics_by_k.keys() if "inertia" in metrics_by_k[k]])
+            if len(k_values) >= 3:
+                inertia_values = [metrics_by_k[k]["inertia"] for k in k_values]
+                elbow_k = self._find_elbow_point(k_values, inertia_values)
+                best_k["elbow"] = elbow_k
+
+        print(f"Best hierarchical parameters: {best_param_dict}, k={best_k_value}")
+        return best_k, metrics_by_k
+
+    def _simple_k_optimization_hierarchical(
+        self,
+        embeddings: np.ndarray,
+        true_labels: np.ndarray,
+        max_clusters: int,
+        clustering_options: Dict[str, Any],
+    ) -> Tuple[Dict[str, int], Dict[int, Dict[str, float]]]:
+        """Fallback: simple k optimization for hierarchical clustering with default parameters."""
+
+        max_possible_clusters = min(max_clusters + 1, len(embeddings))
+        if max_possible_clusters <= 2:
+            cluster_range = [2]
+        else:
+            cluster_range = range(2, max_possible_clusters)
+
+        metrics_by_k = {}
+
+        for k in cluster_range:
+            try:
+                cluster_labels = self.perform_clustering(
+                    embeddings, method="hierarchical", n_clusters=k, **clustering_options
+                )
+                metrics = self.evaluate_clustering(cluster_labels, true_labels, embeddings)
+
+                # Add inertia for elbow method
+                inertia = self._calculate_wcss(embeddings, cluster_labels)
+                metrics["inertia"] = inertia
+
+                metrics_by_k[k] = metrics
+            except Exception as e:
+                print(f"Hierarchical clustering failed with k={k}: {e}")
+                continue
+
+        if not metrics_by_k:
+            # Last resort - just return something
+            best_k = {"silhouette": 2, "calinski_harabasz": 2, "davies_bouldin": 2, "elbow": 2}
+            metrics_by_k = {
+                2: {
+                    "silhouette_score": 0,
+                    "calinski_harabasz_score": 0,
+                    "davies_bouldin_score": float("inf"),
+                }
+            }
+            return best_k, metrics_by_k
+
+        # Find best k for different metrics
+        best_k = {}
+        best_k["silhouette"] = max(cluster_range, key=lambda k: metrics_by_k[k]["silhouette_score"])
+        best_k["calinski_harabasz"] = max(
+            cluster_range, key=lambda k: metrics_by_k[k]["calinski_harabasz_score"]
+        )
+        best_k["davies_bouldin"] = min(
+            cluster_range, key=lambda k: metrics_by_k[k]["davies_bouldin_score"]
+        )
+
+        # Add elbow method
+        if any("inertia" in metrics_by_k[k] for k in cluster_range):
+            inertia_values = [metrics_by_k[k].get("inertia", 0) for k in cluster_range]
+            if any(inertia_values):
+                best_k["elbow"] = self._find_elbow_point(list(cluster_range), inertia_values)
+            else:
+                best_k["elbow"] = cluster_range[0]
+
+        return best_k, metrics_by_k
+
+    def _optimize_kmeans_clustering(
+        self,
+        embeddings: np.ndarray,
+        true_labels: np.ndarray,
+        max_clusters: int,
+        clustering_options: Dict[str, Any],
+    ) -> Tuple[Dict[str, int], Dict[int, Dict[str, float]]]:
+        """Optimize k-means clustering by testing different initialization strategies and k values.
+
+        Uses auto parameter information to determine which parameters to optimize.
+        """
+
+        # Get auto parameter information from clustering_options
+        auto_params = clustering_options.get("_auto_params", {}).get("kmeans", {})
+
+        # Default values from sklearn
+        sklearn_defaults = {"init": "k-means++", "max_iter": 300, "random_state": 42}
+
+        # Determine which parameters to optimize based on auto_params
+        optimize_init = auto_params.get("init", False)
+        optimize_max_iter = auto_params.get("max_iter", False)
+
+        # Get fixed values (user-provided parameters or defaults for non-auto)
+        fixed_init = clustering_options.get("init", sklearn_defaults["init"])
+        fixed_max_iter = clustering_options.get("max_iter", sklearn_defaults["max_iter"])
+
+        # Build candidate parameter combinations (only for parameters in auto mode)
+        if optimize_init:
+            candidate_inits = ["k-means++", "random"]
+        else:
+            candidate_inits = [fixed_init]
+
+        if optimize_max_iter:
+            candidate_max_iters = [100, 200, 300, 500]
+        else:
+            candidate_max_iters = [fixed_max_iter]
+
+        # Print optimization strategy
+        optimizing = []
+        if optimize_init:
+            optimizing.append("init")
+        if optimize_max_iter:
+            optimizing.append("max_iter")
+
+        if optimizing:
+            print(f"  Optimizing k-means parameters: {', '.join(optimizing)}")
+        else:
+            print("  Using user-provided k-means parameters (no optimization)")
+            return self._simple_k_optimization_kmeans(
+                embeddings, true_labels, max_clusters, clustering_options
+            )
+
+        # Fixed random state for reproducibility
+        fixed_random_state = clustering_options.get(
+            "random_state", sklearn_defaults["random_state"]
+        )
+
+        # k values to test
+        max_possible_clusters = min(max_clusters + 1, len(embeddings))
+        if max_possible_clusters <= 2:
+            cluster_range = [2]
+        else:
+            cluster_range = range(2, max_possible_clusters)
+
+        best_score = -np.inf
+        best_params = None
+        metrics_by_k = {}
+
+        # Grid search over parameter combinations
+        for init in candidate_inits:
+            for max_iter in candidate_max_iters:
+
+                # Build parameter dict
+                params = {
+                    "init": init,
+                    "max_iter": max_iter,
+                    "random_state": fixed_random_state,  # Keep reproducible
+                }
+
+                # Test this parameter combination across different k values
+                param_best_score = -np.inf
+                param_best_k = 2
+
+                for k in cluster_range:
+                    try:
+                        cluster_labels = self.perform_clustering(
+                            embeddings, method="kmeans", n_clusters=k, **params
+                        )
+                        metrics = self.evaluate_clustering(cluster_labels, true_labels, embeddings)
+
+                        # Add inertia for elbow method
+                        inertia = self._calculate_inertia(embeddings, cluster_labels)
+                        metrics["inertia"] = inertia
+
+                        # Score using only internal metrics
+                        validity = 1 if len(np.unique(cluster_labels)) >= 2 else 0
+                        silhouette = max(metrics.get("silhouette_score", -1.0), -1.0)
+                        calinski = metrics.get("calinski_harabasz_score", 0.0)
+                        davies_bouldin = metrics.get("davies_bouldin_score", float("inf"))
+
+                        score = (
+                            validity * 2.0
+                            + silhouette * 1.0
+                            + min(calinski / 1000.0, 1.0)
+                            - min(davies_bouldin / 10.0, 1.0)
+                        )
+
+                        # Track best for this parameter combination
+                        if score > param_best_score:
+                            param_best_score = score
+                            param_best_k = k
+
+                        # Store metrics (will be overwritten for each k, but that's fine)
+                        metrics_by_k[k] = metrics
+
+                        # Track global best
+                        if score > best_score:
+                            best_score = score
+                            best_params = (params.copy(), k)
+
+                    except Exception as e:
+                        print(f"K-means clustering failed with params {params}, k={k}: {e}")
+                        continue
+
+        if best_params is None:
+            # Fallback to simple k optimization with default parameters
+            print(
+                "Warning: K-means parameter optimization failed, falling back to k optimization only"
+            )
+            return self._simple_k_optimization_kmeans(
+                embeddings, true_labels, max_clusters, clustering_options
+            )
+
+        # Update clustering_options with best parameters
+        best_param_dict, best_k_value = best_params
+        clustering_options.update(best_param_dict)
+
+        # Create best_k dict with the optimal k for each metric selection method
+        best_k = {
+            "silhouette": best_k_value,
+            "calinski_harabasz": best_k_value,
+            "davies_bouldin": best_k_value,
+            "elbow": best_k_value,
+        }
+
+        # If we have inertia values, also compute elbow method
+        if metrics_by_k and any("inertia" in metrics_by_k[k] for k in metrics_by_k):
+            k_values = sorted([k for k in metrics_by_k.keys() if "inertia" in metrics_by_k[k]])
+            if len(k_values) >= 3:
+                inertia_values = [metrics_by_k[k]["inertia"] for k in k_values]
+                elbow_k = self._find_elbow_point(k_values, inertia_values)
+                best_k["elbow"] = elbow_k
+
+        print(f"Best k-means parameters: {best_param_dict}, k={best_k_value}")
+        return best_k, metrics_by_k
+
+    def _simple_k_optimization_kmeans(
+        self,
+        embeddings: np.ndarray,
+        true_labels: np.ndarray,
+        max_clusters: int,
+        clustering_options: Dict[str, Any],
+    ) -> Tuple[Dict[str, int], Dict[int, Dict[str, float]]]:
+        """Fallback: simple k optimization for k-means clustering with default parameters."""
+
+        max_possible_clusters = min(max_clusters + 1, len(embeddings))
+        if max_possible_clusters <= 2:
+            cluster_range = [2]
+        else:
+            cluster_range = range(2, max_possible_clusters)
+
+        metrics_by_k = {}
+
+        for k in cluster_range:
+            try:
+                cluster_labels = self.perform_clustering(
+                    embeddings, method="kmeans", n_clusters=k, **clustering_options
+                )
+                metrics = self.evaluate_clustering(cluster_labels, true_labels, embeddings)
+
+                # Add inertia for elbow method
+                inertia = self._calculate_inertia(embeddings, cluster_labels)
+                metrics["inertia"] = inertia
+
+                metrics_by_k[k] = metrics
+            except Exception as e:
+                print(f"K-means clustering failed with k={k}: {e}")
+                continue
+
+        if not metrics_by_k:
+            # Last resort - just return something
+            best_k = {"silhouette": 2, "calinski_harabasz": 2, "davies_bouldin": 2, "elbow": 2}
+            metrics_by_k = {
+                2: {
+                    "silhouette_score": 0,
+                    "calinski_harabasz_score": 0,
+                    "davies_bouldin_score": float("inf"),
+                }
+            }
+            return best_k, metrics_by_k
+
+        # Find best k for different metrics
+        best_k = {}
+        best_k["silhouette"] = max(cluster_range, key=lambda k: metrics_by_k[k]["silhouette_score"])
+        best_k["calinski_harabasz"] = max(
+            cluster_range, key=lambda k: metrics_by_k[k]["calinski_harabasz_score"]
+        )
+        best_k["davies_bouldin"] = min(
+            cluster_range, key=lambda k: metrics_by_k[k]["davies_bouldin_score"]
+        )
+
+        # Add elbow method
+        if any("inertia" in metrics_by_k[k] for k in cluster_range):
+            inertia_values = [metrics_by_k[k].get("inertia", 0) for k in cluster_range]
+            if any(inertia_values):
+                best_k["elbow"] = self._find_elbow_point(list(cluster_range), inertia_values)
+            else:
+                best_k["elbow"] = cluster_range[0]
+
+        return best_k, metrics_by_k
 
     @staticmethod
     def evaluate_clustering(
@@ -396,54 +1190,228 @@ class ClusteringEngine:
 
         # For density-based methods, handle specially
         if method == "hdbscan":
-            # Run once with provided params; HDBSCAN doesn't use k directly here
-            cluster_labels = self.perform_clustering(
-                embeddings, method=method, **clustering_options
+            # Get auto parameter information from clustering_options
+            auto_params = clustering_options.get("_auto_params", {}).get("hdbscan", {})
+
+            # Check which parameters need optimization based on auto_params
+            min_cluster_size_default = 5
+            min_samples_default = None
+
+            user_min_cluster_size = clustering_options.get(
+                "min_cluster_size", min_cluster_size_default
             )
-            metrics = self.evaluate_clustering(cluster_labels, true_labels, embeddings)
-            unique_labels = set(cluster_labels)
-            n_clusters_found = len(unique_labels) - (1 if -1 in unique_labels else 0)
-            k_key = max(n_clusters_found, 0)
+            user_min_samples = clustering_options.get("min_samples", min_samples_default)
+
+            # Determine which parameters to optimize based on auto_params
+            optimize_min_cluster_size = auto_params.get("min_cluster_size", False)
+            optimize_min_samples = auto_params.get("min_samples", False)
+
+            params_to_optimize = []
+            if optimize_min_cluster_size:
+                params_to_optimize.append("min_cluster_size")
+            if optimize_min_samples:
+                params_to_optimize.append("min_samples")
+
+            if not params_to_optimize:
+                print(f"  Using user-provided HDBSCAN parameters (no optimization)")
+                # Just run with user parameters and return
+                options = clustering_options.copy()
+                cluster_labels = self.perform_clustering(embeddings, method=method, **options)
+                metrics = self.evaluate_clustering(cluster_labels, true_labels, embeddings)
+                unique_labels = set(cluster_labels)
+                n_clusters_found = len(unique_labels) - (1 if -1 in unique_labels else 0)
+                metrics_by_k = {n_clusters_found: metrics}
+                best_k = {
+                    m: n_clusters_found
+                    for m in ["silhouette", "calinski_harabasz", "davies_bouldin", "elbow"]
+                }
+                return best_k, metrics_by_k
+            else:
+                print(f"  Optimizing HDBSCAN parameters: {', '.join(params_to_optimize)}")
+
+            # Optimize HDBSCAN parameters: min_cluster_size and min_samples
+            n = len(embeddings)
+
+            # Build candidate ranges based on what needs optimization
+            if optimize_min_cluster_size:
+                candidate_min_cluster_sizes = sorted(
+                    {
+                        2,
+                        3,
+                        5,
+                        min_cluster_size_default,
+                        max(2, int(0.01 * n)),
+                        max(2, int(0.02 * n)),
+                        max(2, int(0.05 * n)),
+                    }
+                )
+                candidate_min_cluster_sizes = [
+                    s for s in candidate_min_cluster_sizes if s <= max(2, int(0.1 * n))
+                ]
+            else:
+                candidate_min_cluster_sizes = [user_min_cluster_size]  # Use user-provided value
+
+            if optimize_min_samples:
+                candidate_min_samples = [None]  # None means use min_cluster_size
+                if min_samples_default is not None:
+                    candidate_min_samples.extend([1, min_samples_default, max(1, int(0.01 * n))])
+            else:
+                candidate_min_samples = [user_min_samples]  # Use user-provided value
+
+            best_score = -np.inf
+            best_result = None
+            metrics_by_k = {}
+
+            for min_cluster_size in candidate_min_cluster_sizes:
+                for min_samples in candidate_min_samples:
+                    try:
+                        options = clustering_options.copy()
+                        options["min_cluster_size"] = min_cluster_size
+                        if min_samples is not None:
+                            options["min_samples"] = min_samples
+
+                        cluster_labels = self.perform_clustering(
+                            embeddings, method=method, **options
+                        )
+                        metrics = self.evaluate_clustering(cluster_labels, true_labels, embeddings)
+                        unique_labels = set(cluster_labels)
+                        n_clusters_found = len(unique_labels) - (1 if -1 in unique_labels else 0)
+
+                        # Score using only internal metrics
+                        validity = 1 if n_clusters_found >= 2 else 0
+                        silhouette = max(metrics.get("silhouette_score", -1.0), -1.0)
+                        calinski = metrics.get("calinski_harabasz_score", 0.0)
+                        davies_bouldin = metrics.get("davies_bouldin_score", float("inf"))
+
+                        score = (
+                            validity * 2.0
+                            + silhouette * 1.0
+                            + min(calinski / 1000.0, 1.0)
+                            - min(davies_bouldin / 10.0, 1.0)
+                        )
+
+                        if score > best_score:
+                            best_score = score
+                            best_result = (
+                                cluster_labels,
+                                metrics,
+                                n_clusters_found,
+                                min_cluster_size,
+                                min_samples,
+                            )
+
+                        metrics_by_k[n_clusters_found] = metrics
+
+                    except Exception as e:
+                        print(
+                            f"HDBSCAN failed with min_cluster_size={min_cluster_size}, min_samples={min_samples}: {e}"
+                        )
+                        continue
+
+            if best_result is None:
+                # Fallback to default parameters
+                cluster_labels = self.perform_clustering(
+                    embeddings, method=method, **clustering_options
+                )
+                metrics = self.evaluate_clustering(cluster_labels, true_labels, embeddings)
+                unique_labels = set(cluster_labels)
+                n_clusters_found = len(unique_labels) - (1 if -1 in unique_labels else 0)
+                best_result = (
+                    cluster_labels,
+                    metrics,
+                    n_clusters_found,
+                    min_cluster_size_default,
+                    min_samples_default,
+                )
+                metrics_by_k[n_clusters_found] = metrics
+
+            # Update clustering_options with best parameters
+            clustering_options["min_cluster_size"] = best_result[3]
+            if best_result[4] is not None:
+                clustering_options["min_samples"] = best_result[4]
+
+            k_key = max(best_result[2], 0)
             best_k = {
                 m: k_key
                 for m in [
                     "silhouette",
                     "calinski_harabasz",
                     "davies_bouldin",
-                    "adjusted_rand",
-                    "v_measure",
+                    "elbow",  # Include elbow even though not applicable to HDBSCAN
                 ]
             }
-            metrics_by_k = {k_key: metrics}
             return best_k, metrics_by_k
 
         if method == "dbscan":
-            # Search eps and min_samples using k-distance quantiles
-            eps_default = clustering_options.get("eps", 0.5)
-            min_samples_default = clustering_options.get("min_samples", 5)
+            # Get auto parameter information from clustering_options
+            auto_params = clustering_options.get("_auto_params", {}).get("dbscan", {})
 
+            # Check which parameters need optimization based on auto_params
+            eps_default = 0.5
+            min_samples_default = 5
+
+            user_eps = clustering_options.get("eps", eps_default)
+            user_min_samples = clustering_options.get("min_samples", min_samples_default)
+
+            # Determine which parameters to optimize based on auto_params
+            optimize_eps = auto_params.get("eps", False)
+            optimize_min_samples = auto_params.get("min_samples", False)
+
+            params_to_optimize = []
+            if optimize_eps:
+                params_to_optimize.append("eps")
+            if optimize_min_samples:
+                params_to_optimize.append("min_samples")
+
+            if not params_to_optimize:
+                print(f"  Using user-provided DBSCAN parameters (no optimization)")
+                # Just run with user parameters and return
+                labels = self.perform_clustering(
+                    embeddings, method="dbscan", eps=user_eps, min_samples=user_min_samples
+                )
+                uniq = set(labels)
+                n_c = len(uniq) - (1 if -1 in uniq else 0)
+                metrics = self.evaluate_clustering(labels, true_labels, embeddings)
+                metrics_by_k = {n_c: metrics}
+                best_k = {
+                    m: n_c for m in ["silhouette", "calinski_harabasz", "davies_bouldin", "elbow"]
+                }
+                return best_k, metrics_by_k
+            else:
+                print(f"  Optimizing DBSCAN parameters: {', '.join(params_to_optimize)}")
+
+            # Search eps and min_samples using k-distance quantiles
             # Build candidate grids
             n = len(embeddings)
-            # Choose k for kNN distance roughly min_samples
-            candidate_min_samples = sorted(
-                {2, 3, 4, 5, min_samples_default, max(2, int(0.01 * n)), max(2, int(0.02 * n))}
-            )
-            candidate_min_samples = [m for m in candidate_min_samples if m <= max(2, int(0.05 * n))]
 
-            # Compute k-distance for a base k (use max of candidates)
-            k_for_knn = min(max(candidate_min_samples), max(2, min(50, n - 1)))
-            try:
-                nbrs = NearestNeighbors(n_neighbors=k_for_knn).fit(embeddings)
-                distances, _ = nbrs.kneighbors(embeddings)
-                # Use the distance to the k-th neighbor
-                kth_dist = distances[:, -1]
-                quantiles = [0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95]
-                candidate_eps = sorted(
-                    {float(np.quantile(kth_dist, q)) for q in quantiles} | {eps_default}
+            # Generate candidates based on what needs optimization
+            if optimize_min_samples:
+                candidate_min_samples = sorted(
+                    {2, 3, 4, 5, min_samples_default, max(2, int(0.01 * n)), max(2, int(0.02 * n))}
                 )
-            except Exception:
-                # Fallback to a simple eps list around default
-                candidate_eps = sorted({eps_default * f for f in [0.5, 0.75, 1.0, 1.25, 1.5]})
+                candidate_min_samples = [
+                    m for m in candidate_min_samples if m <= max(2, int(0.05 * n))
+                ]
+            else:
+                candidate_min_samples = [user_min_samples]  # Use user-provided value
+
+            if optimize_eps:
+                # Compute k-distance for a base k (use max of candidates)
+                k_for_knn = min(max(candidate_min_samples), max(2, min(50, n - 1)))
+                try:
+                    nbrs = NearestNeighbors(n_neighbors=k_for_knn).fit(embeddings)
+                    distances, _ = nbrs.kneighbors(embeddings)
+                    # Use the distance to the k-th neighbor
+                    kth_dist = distances[:, -1]
+                    quantiles = [0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95]
+                    candidate_eps = sorted(
+                        {float(np.quantile(kth_dist, q)) for q in quantiles} | {eps_default}
+                    )
+                except Exception:
+                    # Fallback to a simple eps list around default
+                    candidate_eps = sorted({eps_default * f for f in [0.5, 0.75, 1.0, 1.25, 1.5]})
+            else:
+                candidate_eps = [user_eps]  # Use user-provided value
 
             metrics_by_k: Dict[int, Dict[str, float]] = {}
             # Track best by a composite score preferring valid clusterings
@@ -459,13 +1427,18 @@ class ClusteringEngine:
                     uniq = set(labels)
                     n_c = len(uniq) - (1 if -1 in uniq else 0)
                     metrics = self.evaluate_clustering(labels, true_labels, embeddings)
-                    # Composite: prioritize having >1 clusters, then ARI, then silhouette
-                    validity = 1 if n_c >= 2 else 0
+                    # Composite score using only internal metrics (no ground truth)
+                    validity = 1 if n_c >= 2 else 0  # Prefer valid clusterings
+                    silhouette = max(metrics.get("silhouette_score", -1.0), -1.0)
+                    calinski = metrics.get("calinski_harabasz_score", 0.0)
+                    davies_bouldin = metrics.get("davies_bouldin_score", float("inf"))
+
+                    # Composite score: validity + silhouette + normalized calinski - davies_bouldin
                     score = (
-                        validity * 1.0
-                        + metrics.get("adjusted_rand_score", 0.0)
-                        + 0.1 * max(metrics.get("silhouette_score", -1.0), -1.0)
-                        - 0.01 * metrics.get("davies_bouldin_score", float("inf"))
+                        validity * 2.0  # Strong preference for valid clusterings
+                        + silhouette * 1.0  # Silhouette score weight
+                        + min(calinski / 1000.0, 1.0)  # Normalized Calinski-Harabasz (cap at 1.0)
+                        - min(davies_bouldin / 10.0, 1.0)  # Normalized Davies-Bouldin penalty
                     )
                     # Prefer more clusters if tie on score
                     tie_break = n_c
@@ -502,11 +1475,28 @@ class ClusteringEngine:
                     "silhouette",
                     "calinski_harabasz",
                     "davies_bouldin",
-                    "adjusted_rand",
-                    "v_measure",
+                    "elbow",  # Include elbow even though not applicable to DBSCAN
                 ]
             }
             return best_k, metrics_by_k
+
+        # Special optimization for spectral clustering
+        if method == "spectral":
+            return self._optimize_spectral_clustering(
+                embeddings, true_labels, max_clusters, clustering_options
+            )
+
+        # Special optimization for hierarchical clustering
+        if method == "hierarchical":
+            return self._optimize_hierarchical_clustering(
+                embeddings, true_labels, max_clusters, clustering_options
+            )
+
+        # Special optimization for k-means clustering
+        if method == "kmeans":
+            return self._optimize_kmeans_clustering(
+                embeddings, true_labels, max_clusters, clustering_options
+            )
 
         # Ensure we have a valid range for clustering
         max_possible_clusters = min(max_clusters + 1, len(embeddings))
@@ -541,9 +1531,20 @@ class ClusteringEngine:
                 embeddings, method=method, n_clusters=k, **clustering_options
             )
             metrics = self.evaluate_clustering(cluster_labels, true_labels, embeddings)
+
+            # Add inertia/WCSS for elbow method (only for kmeans-like methods)
+            if method in ["kmeans", "spectral"]:
+                # For kmeans, we can calculate inertia (WCSS)
+                inertia = self._calculate_inertia(embeddings, cluster_labels)
+                metrics["inertia"] = inertia
+            elif method == "hierarchical":
+                # For hierarchical, use within-cluster sum of squares approximation
+                wcss = self._calculate_wcss(embeddings, cluster_labels)
+                metrics["inertia"] = wcss
+
             metrics_by_k[k] = metrics
 
-        # Find best k for different metrics
+        # Find best k for different metrics (only internal metrics - no ground truth)
         best_k = {}
         best_k["silhouette"] = max(cluster_range, key=lambda k: metrics_by_k[k]["silhouette_score"])
         best_k["calinski_harabasz"] = max(
@@ -552,10 +1553,14 @@ class ClusteringEngine:
         best_k["davies_bouldin"] = min(
             cluster_range, key=lambda k: metrics_by_k[k]["davies_bouldin_score"]
         )
-        best_k["adjusted_rand"] = max(
-            cluster_range, key=lambda k: metrics_by_k[k]["adjusted_rand_score"]
-        )
-        best_k["v_measure"] = max(cluster_range, key=lambda k: metrics_by_k[k]["v_measure"])
+
+        # Add elbow method for methods that support it
+        if method in ["kmeans", "hierarchical", "spectral"]:
+            inertia_values = [metrics_by_k[k].get("inertia", 0) for k in cluster_range]
+            if any(inertia_values):  # Only if we have inertia values
+                best_k["elbow"] = self._find_elbow_point(list(cluster_range), inertia_values)
+            else:
+                best_k["elbow"] = cluster_range[0]  # Fallback
 
         return best_k, metrics_by_k
 
@@ -694,23 +1699,35 @@ class Visualizer:
     def plot_cluster_optimization(
         self, metrics_by_k: Dict[int, Dict[str, float]], output_path: str
     ):
-        """Plot metrics vs number of clusters."""
+        """Plot internal metrics vs number of clusters (excludes external/ground truth metrics)."""
 
         k_values = sorted(metrics_by_k.keys())
 
-        fig, axes = plt.subplots(2, 3, figsize=(11.7, 8.3))  # A4 landscape size
-        axes = axes.flatten()
-
+        # Only plot internal metrics (avoid using ground truth) + elbow method
         metrics_to_plot = [
             ("silhouette_score", "Silhouette Score"),
             ("calinski_harabasz_score", "Calinski-Harabasz Score"),
             ("davies_bouldin_score", "Davies-Bouldin Score"),
-            ("adjusted_rand_score", "Adjusted Rand Score"),
-            ("v_measure", "V-Measure Score"),
-            ("normalized_mutual_info", "Normalized Mutual Information"),
         ]
 
+        # Add inertia plot if available (for elbow method)
+        if any("inertia" in metrics_by_k[k] for k in k_values):
+            metrics_to_plot.append(("inertia", "Inertia (WCSS) - Elbow Method"))
+
+        # Adjust subplot layout based on number of metrics
+        n_metrics = len(metrics_to_plot)
+        if n_metrics <= 4:
+            fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+            axes = axes.flatten()
+        else:
+            fig, axes = plt.subplots(2, 3, figsize=(11.7, 8.3))  # A4 landscape size
+            axes = axes.flatten()
+
         for i, (metric_key, metric_name) in enumerate(metrics_to_plot):
+            # Skip if metric not available in all k values
+            if not all(metric_key in metrics_by_k[k] for k in k_values):
+                continue
+
             values = [metrics_by_k[k][metric_key] for k in k_values]
             axes[i].plot(k_values, values, "bo-", linewidth=2, markersize=6)
             axes[i].set_xlabel("Number of Clusters")
@@ -721,8 +1738,12 @@ class Visualizer:
             # Mark the best value
             if metric_key == "davies_bouldin_score":  # Lower is better
                 best_k = k_values[np.argmin(values)]
+            elif metric_key == "inertia":  # Elbow method - mark elbow point
+                # Use the static method directly
+                best_k = ClusteringEngine._find_elbow_point(k_values, values)
             else:  # Higher is better
                 best_k = k_values[np.argmax(values)]
+
             best_value = metrics_by_k[best_k][metric_key]
             axes[i].axvline(x=best_k, color="red", linestyle="--", alpha=0.7)
             axes[i].text(
@@ -733,6 +1754,10 @@ class Visualizer:
                 horizontalalignment="center",
                 bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
             )
+
+        # Hide unused subplots
+        for i in range(len(metrics_to_plot), len(axes)):
+            axes[i].set_visible(False)
 
         plt.savefig(output_path, format="pdf", bbox_inches="tight")
         plt.close()
@@ -844,13 +1869,18 @@ class SubsamplingAnalyzer:
                 or (self.config.norm_l2 is False)
                 or self.config.normalization_method == "pipeline"
             ):
-                emb_matrix = EmbeddingNormalizer.normalize_pipeline(
+                emb_matrix, pca_info = EmbeddingNormalizer.normalize_pipeline(
                     emb_matrix,
                     center=self.config.norm_center,
                     scale=self.config.norm_scale,
                     pca_components=self.config.norm_pca_components,
                     l2=self.config.norm_l2,
                 )
+                # Store PCA info for comments file
+                if not hasattr(self, "_pca_info"):
+                    self._pca_info = {}
+                emb_basename = os.path.splitext(os.path.basename(emb_name))[0]
+                self._pca_info[emb_basename] = pca_info
             elif self.config.normalization_method != "none":
                 emb_matrix = EmbeddingNormalizer.normalize_embeddings(
                     emb_matrix, self.config.normalization_method
@@ -880,7 +1910,8 @@ class SubsamplingAnalyzer:
                             emb_matrix, method=method, **method_options
                         )
                     else:
-                        optimal_k = best_k["adjusted_rand"]
+                        # Use configurable internal metric for k selection to avoid using ground truth
+                        optimal_k = best_k[self.config.k_selection_metric]
                         cluster_labels = self.clustering_engine.perform_clustering(
                             emb_matrix, method=method, n_clusters=optimal_k, **method_options
                         )
@@ -1147,13 +2178,17 @@ class ClusteringAnalyzer:
                     f"center={self.config.norm_center}, scale={self.config.norm_scale}, "
                     f"pca_components={self.config.norm_pca_components}, l2={self.config.norm_l2}"
                 )
-                embedding_matrix = EmbeddingNormalizer.normalize_pipeline(
+                embedding_matrix, pca_info = EmbeddingNormalizer.normalize_pipeline(
                     embedding_matrix,
                     center=self.config.norm_center,
                     scale=self.config.norm_scale,
                     pca_components=self.config.norm_pca_components,
                     l2=self.config.norm_l2,
                 )
+                # Store PCA info for comments file
+                if not hasattr(self, "_pca_info"):
+                    self._pca_info = {}
+                self._pca_info["single_embedding"] = pca_info
             elif self.config.normalization_method != "none":
                 print(f"Applying {self.config.normalization_method} normalization...")
                 embedding_matrix = EmbeddingNormalizer.normalize_embeddings(
@@ -1165,8 +2200,13 @@ class ClusteringAnalyzer:
             for method in self.config.methods:
                 print(f"\nClustering with {method}...")
 
-                # Get method-specific options
-                method_options = self.config.clustering_options.get(method, {})
+                # Get method-specific options and include auto_params information
+                method_options = self.config.clustering_options.get(method, {}).copy()
+                # Add auto_params information for this method
+                if "_auto_params" in self.config.clustering_options:
+                    method_options["_auto_params"] = {
+                        method: self.config.clustering_options["_auto_params"].get(method, {})
+                    }
 
                 if self.config.n_clusters and method in ["kmeans", "hierarchical", "spectral"]:
                     cluster_labels = self.clustering_engine.perform_clustering(
@@ -1212,8 +2252,11 @@ class ClusteringAnalyzer:
                                 optimization_results, optimization_path
                             )
                     else:
-                        optimal_k = best_k["adjusted_rand"]
-                        print(f"Optimal number of clusters: {optimal_k}")
+                        # Use configurable internal metric for k selection to avoid using ground truth
+                        optimal_k = best_k[self.config.k_selection_metric]
+                        print(
+                            f"Optimal number of clusters (by {self.config.k_selection_metric}): {optimal_k}"
+                        )
 
                         cluster_labels = self.clustering_engine.perform_clustering(
                             embedding_matrix, method=method, n_clusters=optimal_k, **method_options
@@ -1397,6 +2440,15 @@ class ClusteringAnalyzer:
                 header_lines.append(
                     f"# pipeline: center={self.config.norm_center}, scale={self.config.norm_scale}, pca_components={self.config.norm_pca_components}, l2={self.config.norm_l2}"
                 )
+                # Add PCA information if available
+                if hasattr(self, "_pca_info") and self._pca_info:
+                    for emb_name, pca_info in self._pca_info.items():
+                        if pca_info:  # Only if PCA was actually applied
+                            header_lines.append(
+                                f"# pca_info.{emb_name}: actual_components={pca_info.get('pca_n_components', 'N/A')}, "
+                                f"variance_explained={pca_info.get('pca_explained_variance_ratio_sum', 0):.4f}, "
+                                f"requested={pca_info.get('pca_requested_components', 'N/A')}"
+                            )
                 header_lines.append(
                     f"# subsample: runs={self.config.subsample}, fraction={self.config.subsample_fraction}, stratified={self.config.stratified_subsample}"
                 )
@@ -1489,6 +2541,12 @@ def parse_arguments() -> ClusteringConfig:
         help="Maximum number of clusters to test during optimization",
     )
     parser.add_argument(
+        "--k-selection-metric",
+        choices=["silhouette", "calinski_harabasz", "davies_bouldin", "elbow"],
+        default="silhouette",
+        help="Internal metric to use for selecting optimal k (avoids using ground truth)",
+    )
+    parser.add_argument(
         "--normalization-method",
         choices=["standard", "l2", "pca", "zca", "none", "pipeline"],
         default="l2",
@@ -1532,92 +2590,80 @@ def parse_arguments() -> ClusteringConfig:
         help="Disable L2 normalization at the end of pipeline",
     )
 
-    # Clustering algorithm options
+    # Clustering algorithm options with auto/default/value support
+    # K-means parameters
     parser.add_argument(
         "--kmeans-init",
-        choices=["k-means++", "random"],
-        default="k-means++",
-        help="K-means initialization method (default: k-means++)",
+        default="auto",
+        help="K-means initialization method. Options: 'auto' (optimized), 'default' (k-means++), 'k-means++', 'random' (default: auto)",
     )
     parser.add_argument(
         "--kmeans-max-iter",
-        type=int,
-        default=300,
-        help="Maximum iterations for K-means (default: 300)",
+        default="auto",
+        help="Maximum iterations for K-means. Options: 'auto' (optimized), 'default' (300), or integer value (default: auto)",
     )
+
+    # Hierarchical clustering parameters
     parser.add_argument(
         "--hierarchical-linkage",
-        choices=["ward", "complete", "average", "single"],
-        default="complete",
-        help="Linkage criterion for hierarchical clustering (default: complete)",
+        default="auto",
+        help="Linkage criterion for hierarchical clustering. Options: 'auto' (optimized), 'default' (complete), 'ward', 'complete', 'average', 'single' (default: auto)",
     )
     parser.add_argument(
         "--hierarchical-metric",
-        choices=["euclidean", "l1", "l2", "manhattan", "cosine"],
-        default="euclidean",
-        help="Distance metric for hierarchical clustering (default: euclidean). Note: ward linkage only supports euclidean.",
+        default="auto",
+        help="Distance metric for hierarchical clustering. Options: 'auto' (optimized), 'default' (euclidean), 'euclidean', 'l1', 'l2', 'manhattan', 'cosine'. Note: ward linkage only supports euclidean (default: auto)",
     )
+
+    # DBSCAN parameters
     parser.add_argument(
         "--dbscan-eps",
-        type=float,
-        default=0.5,
-        help="DBSCAN eps parameter (default: 0.5)",
+        default="auto",
+        help="DBSCAN eps parameter. Options: 'auto' (optimized), 'default' (0.5), or float value (default: auto)",
     )
     parser.add_argument(
         "--dbscan-min-samples",
-        type=int,
-        default=5,
-        help="DBSCAN min_samples parameter (default: 5)",
+        default="auto",
+        help="DBSCAN min_samples parameter. Options: 'auto' (optimized), 'default' (5), or integer value (default: auto)",
     )
 
     # HDBSCAN parameters
     parser.add_argument(
         "--hdbscan-min-cluster-size",
-        type=int,
-        default=5,
-        help="HDBSCAN min_cluster_size parameter (default: 5)",
+        default="auto",
+        help="HDBSCAN min_cluster_size parameter. Options: 'auto' (optimized), 'default' (5), or integer value (default: auto)",
     )
     parser.add_argument(
         "--hdbscan-min-samples",
-        type=int,
-        help="HDBSCAN min_samples parameter (default: None, uses min_cluster_size)",
+        default="auto",
+        help="HDBSCAN min_samples parameter. Options: 'auto' (optimized), 'default' (None), or integer value (default: auto)",
     )
     parser.add_argument(
         "--hdbscan-cluster-selection-epsilon",
-        type=float,
-        default=0.0,
-        help="HDBSCAN cluster_selection_epsilon parameter (default: 0.0)",
+        default="auto",
+        help="HDBSCAN cluster_selection_epsilon parameter. Options: 'auto' (optimized), 'default' (0.0), or float value (default: auto)",
     )
 
     # Spectral Clustering parameters
     parser.add_argument(
         "--spectral-affinity",
-        choices=[
-            "rbf",
-            "nearest_neighbors",
-            "precomputed",
-            "precomputed_nearest_neighbors",
-        ],
-        default="rbf",
-        help="Spectral Clustering affinity (default: rbf)",
+        default="auto",
+        help="Spectral Clustering affinity. Options: 'auto' (optimized), 'default' (rbf), 'rbf', 'nearest_neighbors', 'precomputed', 'precomputed_nearest_neighbors' (default: auto)",
     )
     parser.add_argument(
         "--spectral-assign-labels",
-        choices=["kmeans", "discretize"],
-        default="kmeans",
-        help="Spectral Clustering label assignment strategy (default: kmeans)",
+        default="auto",
+        help="Spectral Clustering label assignment strategy. Options: 'auto' (optimized), 'default' (kmeans), 'kmeans', 'discretize' (default: auto)",
     )
     parser.add_argument(
         "--spectral-n-neighbors",
-        type=int,
-        default=10,
-        help="Number of neighbors for nearest_neighbors affinity (default: 10)",
+        default="auto",
+        help="Number of neighbors for nearest_neighbors affinity. Options: 'auto' (optimized), 'default' (10), or integer value (default: auto)",
     )
     parser.add_argument(
         "--spectral-gamma",
-        type=float,
-        default=None,
-        help="Kernel coefficient for rbf affinity (default: auto)",
+        default="auto",
+        help="Kernel coefficient for rbf affinity. Options: 'auto' (optimized), 'default' (auto/None), or float value (default: auto)",
     )
 
     parser.add_argument(
@@ -1637,33 +2683,169 @@ def parse_arguments() -> ClusteringConfig:
 
     args = parser.parse_args()
 
-    # Build clustering options dictionary
+    # Helper function to parse parameter values with auto/default/value support
+    def parse_clustering_param(value, param_type, default_value, valid_choices=None):
+        """Parse clustering parameter with auto/default/value support.
+
+        Args:
+            value: The string value from CLI
+            param_type: Type to convert to (int, float, str)
+            default_value: The sklearn default value
+            valid_choices: List of valid string choices (for string parameters)
+
+        Returns:
+            Tuple of (parsed_value, is_auto_mode)
+            - parsed_value: The actual value to use
+            - is_auto_mode: True if optimization should be used
+        """
+        if value == "auto":
+            return default_value, True  # Use default for optimization, but mark as auto
+        elif value == "default":
+            return default_value, False  # Use default, no optimization
+        else:
+            # Parse specific value
+            if param_type == int:
+                try:
+                    return int(value), False
+                except ValueError:
+                    raise ValueError(f"Invalid integer value: {value}")
+            elif param_type == float:
+                try:
+                    return float(value), False
+                except ValueError:
+                    raise ValueError(f"Invalid float value: {value}")
+            elif param_type == str:
+                if valid_choices and value not in valid_choices:
+                    raise ValueError(f"Invalid choice '{value}'. Valid choices: {valid_choices}")
+                return value, False
+            else:
+                return value, False
+
+    # Parse all clustering parameters
+    kmeans_params = {}
+    hierarchical_params = {}
+    dbscan_params = {}
+    hdbscan_params = {}
+    spectral_params = {}
+
+    # Track which parameters should be optimized (auto mode)
+    auto_params = {"kmeans": {}, "hierarchical": {}, "dbscan": {}, "hdbscan": {}, "spectral": {}}
+
+    # K-means parameters
+    kmeans_init, auto_init = parse_clustering_param(
+        args.kmeans_init, str, "k-means++", ["k-means++", "random"]
+    )
+    kmeans_params["init"] = kmeans_init
+    if auto_init:
+        auto_params["kmeans"]["init"] = True
+
+    kmeans_max_iter, auto_max_iter = parse_clustering_param(args.kmeans_max_iter, int, 300)
+    kmeans_params["max_iter"] = kmeans_max_iter
+    if auto_max_iter:
+        auto_params["kmeans"]["max_iter"] = True
+
+    # Hierarchical parameters
+    hier_linkage, auto_linkage = parse_clustering_param(
+        args.hierarchical_linkage, str, "complete", ["ward", "complete", "average", "single"]
+    )
+    hierarchical_params["linkage"] = hier_linkage
+    if auto_linkage:
+        auto_params["hierarchical"]["linkage"] = True
+
+    hier_metric, auto_metric = parse_clustering_param(
+        args.hierarchical_metric, str, "euclidean", ["euclidean", "l1", "l2", "manhattan", "cosine"]
+    )
+    hierarchical_params["metric"] = hier_metric
+    if auto_metric:
+        auto_params["hierarchical"]["metric"] = True
+
+    # DBSCAN parameters
+    dbscan_eps, auto_eps = parse_clustering_param(args.dbscan_eps, float, 0.5)
+    dbscan_params["eps"] = dbscan_eps
+    if auto_eps:
+        auto_params["dbscan"]["eps"] = True
+
+    dbscan_min_samples, auto_min_samples = parse_clustering_param(args.dbscan_min_samples, int, 5)
+    dbscan_params["min_samples"] = dbscan_min_samples
+    if auto_min_samples:
+        auto_params["dbscan"]["min_samples"] = True
+
+    # HDBSCAN parameters
+    hdbscan_min_cluster_size, auto_min_cluster_size = parse_clustering_param(
+        args.hdbscan_min_cluster_size, int, 5
+    )
+    hdbscan_params["min_cluster_size"] = hdbscan_min_cluster_size
+    if auto_min_cluster_size:
+        auto_params["hdbscan"]["min_cluster_size"] = True
+
+    # HDBSCAN min_samples can be None (special case)
+    if args.hdbscan_min_samples == "auto":
+        hdbscan_params["min_samples"] = None
+        auto_params["hdbscan"]["min_samples"] = True
+    elif args.hdbscan_min_samples == "default":
+        hdbscan_params["min_samples"] = None
+    else:
+        hdbscan_params["min_samples"] = (
+            int(args.hdbscan_min_samples) if args.hdbscan_min_samples != "None" else None
+        )
+
+    hdbscan_epsilon, auto_epsilon = parse_clustering_param(
+        args.hdbscan_cluster_selection_epsilon, float, 0.0
+    )
+    hdbscan_params["cluster_selection_epsilon"] = hdbscan_epsilon
+    if auto_epsilon:
+        auto_params["hdbscan"]["cluster_selection_epsilon"] = True
+
+    # Spectral parameters
+    spectral_affinity, auto_affinity = parse_clustering_param(
+        args.spectral_affinity,
+        str,
+        "rbf",
+        ["rbf", "nearest_neighbors", "precomputed", "precomputed_nearest_neighbors"],
+    )
+    spectral_params["affinity"] = spectral_affinity
+    if auto_affinity:
+        auto_params["spectral"]["affinity"] = True
+
+    spectral_assign_labels, auto_assign_labels = parse_clustering_param(
+        args.spectral_assign_labels, str, "kmeans", ["kmeans", "discretize"]
+    )
+    spectral_params["assign_labels"] = spectral_assign_labels
+    if auto_assign_labels:
+        auto_params["spectral"]["assign_labels"] = True
+
+    spectral_n_neighbors, auto_n_neighbors = parse_clustering_param(
+        args.spectral_n_neighbors, int, 10
+    )
+    spectral_params["n_neighbors"] = spectral_n_neighbors
+    if auto_n_neighbors:
+        auto_params["spectral"]["n_neighbors"] = True
+
+    # Spectral gamma can be None (special case)
+    if args.spectral_gamma == "auto":
+        spectral_params["gamma"] = None  # Let sklearn decide
+        auto_params["spectral"]["gamma"] = True
+    elif args.spectral_gamma == "default":
+        spectral_params["gamma"] = None  # sklearn default
+    else:
+        try:
+            spectral_params["gamma"] = (
+                float(args.spectral_gamma) if args.spectral_gamma != "None" else None
+            )
+        except ValueError:
+            raise ValueError(f"Invalid gamma value: {args.spectral_gamma}")
+
+    # Build clustering options dictionary with auto parameter information
     clustering_options = {
-        "kmeans": {
-            "init": args.kmeans_init,
-            "max_iter": args.kmeans_max_iter,
-        },
-        "hierarchical": {
-            "linkage": args.hierarchical_linkage,
-            "metric": args.hierarchical_metric,
-        },
-        "dbscan": {
-            "eps": args.dbscan_eps,
-            "min_samples": args.dbscan_min_samples,
-        },
-        "hdbscan": {
-            "min_cluster_size": args.hdbscan_min_cluster_size,
-            "min_samples": args.hdbscan_min_samples,
-            "cluster_selection_epsilon": args.hdbscan_cluster_selection_epsilon,
-        },
-        "spectral": {
-            "affinity": args.spectral_affinity,
-            "assign_labels": args.spectral_assign_labels,
-            "n_neighbors": args.spectral_n_neighbors,
-            # Only include gamma if provided (None -> let sklearn decide)
-            **({"gamma": args.spectral_gamma} if args.spectral_gamma is not None else {}),
-        },
+        "kmeans": kmeans_params,
+        "hierarchical": hierarchical_params,
+        "dbscan": dbscan_params,
+        "hdbscan": hdbscan_params,
+        "spectral": spectral_params,
     }
+
+    # Store auto parameter information with special keys
+    clustering_options["_auto_params"] = auto_params
 
     # Validate hierarchical clustering parameters
     if args.hierarchical_linkage == "ward" and args.hierarchical_metric != "euclidean":
@@ -1688,6 +2870,7 @@ def parse_arguments() -> ClusteringConfig:
         methods=args.methods,
         n_clusters=args.n_clusters,
         max_clusters=args.max_clusters,
+        k_selection_metric=args.k_selection_metric,
         normalization_method=args.normalization_method,
         norm_center=(True if args.norm_center else False) if not args.norm_no_center else False,
         norm_scale=(True if args.norm_scale else False) if not args.norm_no_scale else False,

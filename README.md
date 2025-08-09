@@ -14,16 +14,19 @@ This toolkit provides a comprehensive pipeline for protein embedding analysis, i
 - pandas, numpy, matplotlib, seaborn, scikit-learn
 - umap-learn, colorcet, pacmap
 - hdbscan (for HDBSCAN clustering)
+- kneed (for elbow method optimization)
 - h5py (optional, for HDF5 input)
 - dash, plotly (for interactive visualization)
+- torch, transformers (for some embedding models)
 
 ## Supported Methods
 
 ### Clustering Algorithms
-- **K-means**: Efficient partitional clustering with initialization options
-- **Hierarchical**: Agglomerative clustering with multiple linkage criteria (ward, complete, average, single) and distance metrics
-- **DBSCAN**: Density-based clustering for discovering clusters of varying shapes (auto-parameter search for eps/min_samples when not specified)
-- **HDBSCAN**: Hierarchical density-based clustering with noise detection
+- **K-means**: Efficient partitional clustering with automatic k detection and initialization optimization
+- **Hierarchical**: Agglomerative clustering with multiple linkage criteria (ward, complete, average, single) and distance metrics, automatic k detection
+- **DBSCAN**: Density-based clustering with automatic eps/min_samples optimization via k-distance analysis
+- **HDBSCAN**: Hierarchical density-based clustering with noise detection and parameter optimization
+- **Spectral**: Graph-based clustering with automatic k detection and parameter optimization for affinity matrices
 
 ### Dimensionality Reduction Methods
 - **UMAP**: Uniform Manifold Approximation and Projection
@@ -149,12 +152,28 @@ python clustering_evaluation.py embeddings.pkl data/metadata.tsv --methods kmean
 ```
 
 **Key Features:**
-- **Multiple clustering algorithms**: K-means, Hierarchical (with linkage options), DBSCAN, HDBSCAN
-- **Automatic optimization**: Finds optimal number of clusters using multiple criteria
+- **Multiple clustering algorithms**: K-means, Hierarchical, DBSCAN, HDBSCAN, Spectral clustering
+- **Intelligent parameter optimization**: Comprehensive auto-optimization for all methods using internal metrics
+- **Flexible parameter control**: Choose between auto-optimization, sklearn defaults, or specific values
+- **Mixed parameter modes**: Optimize some parameters while controlling others manually
 - **Comprehensive evaluation**: 7+ clustering quality metrics including Adjusted Rand Score, V-Measure, Silhouette Score
 - **Statistical analysis**: Subsampling with significance testing to compare embedding methods
 - **Normalization options**: Standard, L2, PCA whitening, ZCA whitening, Pipeline, or None
 - **Rich visualizations**: Cluster optimization plots, confusion matrices, significance heatmaps
+
+**Parameter System Examples:**
+```bash
+# Auto-optimization (default) - let the system find optimal parameters
+python clustering_evaluation.py embeddings.pkl metadata.tsv --methods kmeans dbscan
+
+# Mixed mode - specify some parameters, optimize others
+python clustering_evaluation.py embeddings.pkl metadata.tsv \
+    --methods kmeans --n-clusters 5 --kmeans-init auto
+
+# Expert mode - full manual control
+python clustering_evaluation.py embeddings.pkl metadata.tsv \
+    --methods hierarchical --n-clusters 8 --hierarchical-linkage ward
+```
 
 - See the [clustering evaluation documentation](README_clustering_evaluation.md) for detailed usage and options.
 

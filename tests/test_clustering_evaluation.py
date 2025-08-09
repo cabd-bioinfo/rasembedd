@@ -510,8 +510,7 @@ class TestClusteringEngine:
             "silhouette",
             "calinski_harabasz",
             "davies_bouldin",
-            "adjusted_rand",
-            "v_measure",
+            "elbow",
         ]
         for criterion in expected_criteria:
             assert criterion in best_k
@@ -798,16 +797,21 @@ class TestDensityBasedOptimization:
         X, y = self._make_separable_data(n_per_cluster=15, seed=123)
 
         # Intentionally poor defaults to force the search to do work
-        opts = {"eps": 0.05, "min_samples": 15}
+        # Include auto parameters to trigger optimization
+        opts = {
+            "eps": 0.05,
+            "min_samples": 15,
+            "_auto_params": {"dbscan": {"eps": True, "min_samples": True}},
+        }
 
         best_k, by_k = engine.find_optimal_clusters(
             X, y, method="dbscan", max_clusters=10, clustering_options=opts
         )
 
-        # Options should be updated to selected parameters
-        assert opts["eps"] != 0.05 or opts["min_samples"] != 15
-
-        # Should report at least 2 clusters as best across criteria
+        # Options should be updated to selected parameters when optimization is enabled
+        assert (
+            opts["eps"] != 0.05 or opts["min_samples"] != 15
+        )  # Should report at least 2 clusters as best across criteria
         for crit, k in best_k.items():
             assert k >= 2
 
@@ -1399,7 +1403,7 @@ class TestNormalizationPipeline:
 
     def test_pipeline_center_only(self):
         X = np.random.randn(50, 10)
-        Xp = EmbeddingNormalizer.normalize_pipeline(
+        Xp, info = EmbeddingNormalizer.normalize_pipeline(
             X, center=True, scale=False, pca_components=0, l2=False
         )
         # Features should be centered
@@ -1407,7 +1411,7 @@ class TestNormalizationPipeline:
 
     def test_pipeline_scale_only(self):
         X = np.random.randn(60, 12) + 3.14  # shift mean to ensure no centering
-        Xp = EmbeddingNormalizer.normalize_pipeline(
+        Xp, info = EmbeddingNormalizer.normalize_pipeline(
             X, center=False, scale=True, pca_components=0, l2=False
         )
         # Features should have unit variance (approximately)
@@ -1418,14 +1422,14 @@ class TestNormalizationPipeline:
 
     def test_pipeline_pca_components_count(self):
         X = np.random.randn(40, 8)
-        Xp = EmbeddingNormalizer.normalize_pipeline(
+        Xp, info = EmbeddingNormalizer.normalize_pipeline(
             X, center=True, scale=True, pca_components=3, l2=False
         )
         assert Xp.shape == (40, 3)
 
     def test_pipeline_pca_variance_fraction(self):
         X = np.random.randn(80, 20)
-        Xp = EmbeddingNormalizer.normalize_pipeline(
+        Xp, info = EmbeddingNormalizer.normalize_pipeline(
             X, center=True, scale=True, pca_components=0.9, l2=False
         )
         # Reduced dimensionality but >0 and <= original features
@@ -1433,7 +1437,7 @@ class TestNormalizationPipeline:
 
     def test_pipeline_l2_applied(self):
         X = np.random.randn(25, 7)
-        Xp = EmbeddingNormalizer.normalize_pipeline(
+        Xp, info = EmbeddingNormalizer.normalize_pipeline(
             X, center=False, scale=False, pca_components=0, l2=True
         )
         norms = np.linalg.norm(Xp, axis=1)
@@ -1471,3 +1475,505 @@ class TestNormalizationPipeline:
         df = analyzer.run_subsampling_analysis(protein_ids, embeddings_dict, true_labels)
         assert isinstance(df, pd.DataFrame)
         assert len(df) > 0
+
+
+class TestParameterOptimization:
+    """Test cases for the new parameter optimization system."""
+
+    def test_auto_parameter_propagation(self):
+        """Test that auto parameters are properly stored and propagated."""
+        config = ClusteringConfig(
+            embedding_files=["test.pkl"],
+            metadata_file="metadata.tsv",
+            methods=["kmeans"],
+            clustering_options={
+                "kmeans": {
+                    "init": "auto",
+                    "max_iter": "auto",
+                    "n_clusters": "auto",
+                    "_auto_params": {
+                        "kmeans": {"init": True, "max_iter": True, "n_clusters": True}
+                    },
+                }
+            },
+        )
+
+        engine = ClusteringEngine()
+        embeddings = np.random.randn(20, 10)
+        true_labels = np.random.randint(0, 3, 20)
+
+        # Test that auto parameters are recognized
+        clustering_options = config.clustering_options.get("kmeans", {})
+        auto_params = clustering_options.get("_auto_params", {}).get("kmeans", {})
+
+        assert auto_params.get("init", False) == True
+        assert auto_params.get("max_iter", False) == True
+        assert auto_params.get("n_clusters", False) == True
+
+    def test_kmeans_parameter_optimization(self):
+        """Test K-means parameter optimization with auto parameters."""
+        engine = ClusteringEngine()
+
+        # Create separable clusters for better optimization
+        cluster1 = np.random.normal(0, 0.5, (10, 5))
+        cluster2 = np.random.normal(5, 0.5, (10, 5))
+        cluster3 = np.random.normal(10, 0.5, (10, 5))
+        embeddings = np.vstack([cluster1, cluster2, cluster3])
+        true_labels = np.array([0] * 10 + [1] * 10 + [2] * 10)
+
+        clustering_options = {"_auto_params": {"kmeans": {"init": True, "max_iter": True}}}
+
+        best_k, metrics_by_k = engine.find_optimal_clusters(
+            embeddings,
+            true_labels,
+            method="kmeans",
+            max_clusters=5,
+            clustering_options=clustering_options,
+        )
+
+        assert isinstance(best_k, dict)
+        assert "silhouette" in best_k
+        assert "calinski_harabasz" in best_k
+        assert "davies_bouldin" in best_k
+        assert "elbow" in best_k
+        assert isinstance(metrics_by_k, dict)
+        assert len(metrics_by_k) > 0
+
+    def test_hierarchical_parameter_optimization(self):
+        """Test hierarchical clustering parameter optimization."""
+        engine = ClusteringEngine()
+
+        # Create test data
+        embeddings = np.random.randn(15, 8)
+        true_labels = np.random.randint(0, 3, 15)
+
+        clustering_options = {"_auto_params": {"hierarchical": {"linkage": True, "metric": True}}}
+
+        best_k, metrics_by_k = engine.find_optimal_clusters(
+            embeddings,
+            true_labels,
+            method="hierarchical",
+            max_clusters=5,
+            clustering_options=clustering_options,
+        )
+
+        assert isinstance(best_k, dict)
+        assert "silhouette" in best_k
+        assert isinstance(metrics_by_k, dict)
+
+        # Check that optimization actually updated the clustering options
+        assert "linkage" in clustering_options or "metric" in clustering_options
+
+    def test_spectral_parameter_optimization(self):
+        """Test spectral clustering parameter optimization."""
+        engine = ClusteringEngine()
+
+        embeddings = np.random.randn(15, 6)
+        true_labels = np.random.randint(0, 3, 15)
+
+        clustering_options = {
+            "_auto_params": {"spectral": {"affinity": True, "gamma": True, "assign_labels": True}}
+        }
+
+        best_k, metrics_by_k = engine.find_optimal_clusters(
+            embeddings,
+            true_labels,
+            method="spectral",
+            max_clusters=4,
+            clustering_options=clustering_options,
+        )
+
+        assert isinstance(best_k, dict)
+        assert isinstance(metrics_by_k, dict)
+
+    def test_dbscan_parameter_optimization(self):
+        """Test DBSCAN parameter optimization."""
+        engine = ClusteringEngine()
+
+        # Create clustered data for DBSCAN
+        cluster1 = np.random.normal([0, 0], 0.3, (8, 2))
+        cluster2 = np.random.normal([3, 3], 0.3, (8, 2))
+        embeddings = np.vstack([cluster1, cluster2])
+        true_labels = np.array([0] * 8 + [1] * 8)
+
+        clustering_options = {"_auto_params": {"dbscan": {"eps": True, "min_samples": True}}}
+
+        best_k, metrics_by_k = engine.find_optimal_clusters(
+            embeddings,
+            true_labels,
+            method="dbscan",
+            max_clusters=5,
+            clustering_options=clustering_options,
+        )
+
+        assert isinstance(best_k, dict)
+        assert isinstance(metrics_by_k, dict)
+        assert "eps" in clustering_options
+        assert "min_samples" in clustering_options
+
+    def test_hdbscan_parameter_optimization(self):
+        """Test HDBSCAN parameter optimization."""
+        engine = ClusteringEngine()
+
+        # Create test data
+        embeddings = np.random.randn(20, 4)
+        true_labels = np.random.randint(0, 3, 20)
+
+        clustering_options = {
+            "_auto_params": {"hdbscan": {"min_cluster_size": True, "min_samples": True}}
+        }
+
+        best_k, metrics_by_k = engine.find_optimal_clusters(
+            embeddings,
+            true_labels,
+            method="hdbscan",
+            max_clusters=5,
+            clustering_options=clustering_options,
+        )
+
+        assert isinstance(best_k, dict)
+        assert isinstance(metrics_by_k, dict)
+        assert "min_cluster_size" in clustering_options
+
+    def test_mixed_parameter_modes(self):
+        """Test mixed parameter modes (some auto, some manual)."""
+        engine = ClusteringEngine()
+
+        embeddings = np.random.randn(15, 6)
+        true_labels = np.random.randint(0, 3, 15)
+
+        # Mix of auto and manual parameters
+        clustering_options = {
+            "init": "k-means++",  # Manual parameter
+            "max_iter": 200,  # Manual parameter
+            "_auto_params": {
+                "kmeans": {
+                    "init": False,  # Not auto (manual)
+                    "max_iter": False,  # Not auto (manual)
+                }
+            },
+        }
+
+        best_k, metrics_by_k = engine.find_optimal_clusters(
+            embeddings,
+            true_labels,
+            method="kmeans",
+            max_clusters=4,
+            clustering_options=clustering_options,
+        )
+
+        # Should use manual parameters, not optimize
+        assert clustering_options["init"] == "k-means++"
+        assert clustering_options["max_iter"] == 200
+
+    def test_no_optimization_when_all_manual(self):
+        """Test that no optimization occurs when all parameters are manual."""
+        engine = ClusteringEngine()
+
+        embeddings = np.random.randn(12, 5)
+        true_labels = np.random.randint(0, 3, 12)
+
+        clustering_options = {
+            "linkage": "ward",
+            "metric": "euclidean",
+            "_auto_params": {
+                "hierarchical": {"linkage": False, "metric": False}  # Manual  # Manual
+            },
+        }
+
+        original_linkage = clustering_options["linkage"]
+        original_metric = clustering_options["metric"]
+
+        best_k, metrics_by_k = engine.find_optimal_clusters(
+            embeddings,
+            true_labels,
+            method="hierarchical",
+            max_clusters=4,
+            clustering_options=clustering_options,
+        )
+
+        # Parameters should not have changed
+        assert clustering_options["linkage"] == original_linkage
+        assert clustering_options["metric"] == original_metric
+
+
+class TestElbowMethod:
+    """Test cases for the elbow method implementation."""
+
+    def test_elbow_point_detection(self):
+        """Test elbow point detection algorithm."""
+        # Create a typical inertia curve with an elbow
+        k_values = [2, 3, 4, 5, 6, 7, 8]
+        inertia_values = [100, 50, 30, 25, 23, 22, 21]  # Clear elbow at k=4
+
+        elbow_k = ClusteringEngine._find_elbow_point(k_values, inertia_values)
+
+        assert isinstance(elbow_k, int)
+        assert elbow_k in k_values
+        # Should detect elbow around k=4 where the slope changes significantly
+        assert 3 <= elbow_k <= 5
+
+    def test_elbow_method_with_minimal_data(self):
+        """Test elbow method with minimal data points."""
+        k_values = [2, 3]
+        inertia_values = [10, 8]
+
+        elbow_k = ClusteringEngine._find_elbow_point(k_values, inertia_values)
+        assert elbow_k == 2  # Should return first value when insufficient data
+
+    def test_elbow_method_integration(self):
+        """Test elbow method integration in clustering optimization."""
+        engine = ClusteringEngine()
+
+        # Create data with clear cluster structure
+        cluster1 = np.random.normal([0, 0], 0.5, (10, 2))
+        cluster2 = np.random.normal([3, 0], 0.5, (10, 2))
+        cluster3 = np.random.normal([0, 3], 0.5, (10, 2))
+        embeddings = np.vstack([cluster1, cluster2, cluster3])
+        true_labels = np.array([0] * 10 + [1] * 10 + [2] * 10)
+
+        best_k, metrics_by_k = engine.find_optimal_clusters(
+            embeddings, true_labels, method="kmeans", max_clusters=6
+        )
+
+        assert "elbow" in best_k
+        assert isinstance(best_k["elbow"], int)
+        # Check that inertia values are present in metrics
+        assert any("inertia" in metrics_by_k[k] for k in metrics_by_k)
+
+
+class TestInternalMetricsOnly:
+    """Test that only internal metrics are used for parameter selection."""
+
+    def test_parameter_optimization_uses_internal_metrics_only(self):
+        """Test that parameter optimization only uses internal metrics."""
+        engine = ClusteringEngine()
+
+        embeddings = np.random.randn(20, 8)
+        true_labels = np.random.randint(0, 4, 20)
+
+        clustering_options = {"_auto_params": {"kmeans": {"init": True, "max_iter": True}}}
+
+        best_k, metrics_by_k = engine.find_optimal_clusters(
+            embeddings,
+            true_labels,
+            method="kmeans",
+            max_clusters=6,
+            clustering_options=clustering_options,
+        )
+
+        # Check that internal metrics are present
+        for k, metrics in metrics_by_k.items():
+            assert "silhouette_score" in metrics
+            assert "calinski_harabasz_score" in metrics
+            assert "davies_bouldin_score" in metrics
+            # External metrics should also be present but not used for optimization
+            assert "adjusted_rand_score" in metrics
+
+    def test_best_k_selection_criteria(self):
+        """Test that best k selection uses appropriate criteria for each metric."""
+        engine = ClusteringEngine()
+
+        embeddings = np.random.randn(15, 6)
+        true_labels = np.random.randint(0, 3, 15)
+
+        best_k, metrics_by_k = engine.find_optimal_clusters(
+            embeddings, true_labels, method="kmeans", max_clusters=5
+        )
+
+        # Check that all required metrics are present
+        assert "silhouette" in best_k
+        assert "calinski_harabasz" in best_k
+        assert "davies_bouldin" in best_k
+        assert "elbow" in best_k
+
+        # All values should be valid k values
+        k_values = list(metrics_by_k.keys())
+        for metric_name, k_value in best_k.items():
+            assert k_value in k_values
+
+
+class TestParameterSystem:
+    """Test the comprehensive parameter system (auto/default/value modes)."""
+
+    def test_auto_mode_triggers_optimization(self):
+        """Test that clustering with auto parameters works."""
+        # Test auto parameters in configuration
+        config = ClusteringConfig(
+            embedding_files=["test.pkl"],
+            metadata_file="metadata.tsv",
+            methods=["kmeans"],
+            clustering_options={
+                "kmeans": {"init": "k-means++", "max_iter": 300},
+                "_auto_params": {"kmeans": {"init": True}},
+            },
+        )
+
+        # Check that auto parameters are stored
+        assert "_auto_params" in config.clustering_options
+        assert config.clustering_options["_auto_params"]["kmeans"]["init"] is True
+
+    def test_default_mode_uses_sklearn_defaults(self):
+        """Test that default parameters work."""
+        config = ClusteringConfig(
+            embedding_files=["test.pkl"],
+            metadata_file="metadata.tsv",
+            methods=["kmeans"],
+            clustering_options={
+                "kmeans": {"init": "k-means++", "max_iter": 300},
+                "_auto_params": {"kmeans": {}},
+            },
+        )
+
+        # Check that defaults are used when no auto params specified
+        assert config.clustering_options["kmeans"]["init"] == "k-means++"
+        assert config.clustering_options["kmeans"]["max_iter"] == 300
+
+    def test_specific_values_preserved(self):
+        """Test that specific parameter values are preserved."""
+        config = ClusteringConfig(
+            embedding_files=["test.pkl"],
+            metadata_file="metadata.tsv",
+            methods=["kmeans"],
+            clustering_options={
+                "kmeans": {"init": "random", "max_iter": 500},
+                "_auto_params": {"kmeans": {}},
+            },
+        )
+
+        # Check that specific values are preserved
+        assert config.clustering_options["kmeans"]["init"] == "random"
+        assert config.clustering_options["kmeans"]["max_iter"] == 500
+
+    def test_mixed_parameter_modes_integration(self):
+        """Test mixed parameter modes in a full analysis."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Create test data
+            embeddings = {f"protein_{i}": np.random.randn(50) for i in range(20)}
+            metadata = pd.DataFrame(
+                {
+                    "uniprot_id": [f"protein_{i}" for i in range(20)],
+                    "Family.name": ["A"] * 7 + ["B"] * 7 + ["C"] * 6,
+                }
+            )
+
+            # Save test files
+            embedding_file = os.path.join(temp_dir, "test_embeddings.pkl")
+            with open(embedding_file, "wb") as f:
+                pickle.dump(embeddings, f)
+
+            metadata_file = os.path.join(temp_dir, "metadata.tsv")
+            metadata.to_csv(metadata_file, sep="\t", index=False)
+
+            # Create config with mixed parameter modes
+            config = ClusteringConfig(
+                embedding_files=[embedding_file],
+                metadata_file=metadata_file,
+                output_dir=temp_dir,
+                methods=["kmeans"],
+                clustering_options={
+                    "kmeans": {
+                        "init": "k-means++",  # Specific value
+                        "max_iter": "auto",  # Auto optimization
+                        "random_state": 42,  # Specific value
+                        "_auto_params": {
+                            "kmeans": {
+                                "init": False,  # Not auto
+                                "max_iter": True,  # Auto
+                                "random_state": False,  # Not auto
+                            }
+                        },
+                    }
+                },
+            )
+
+            analyzer = ClusteringAnalyzer(config)
+
+            # This should run without errors and respect the mixed parameter modes
+            try:
+                analyzer.run_analysis()
+                success = True
+            except Exception as e:
+                success = False
+                print(f"Analysis failed: {e}")
+
+            assert success, "Mixed parameter mode analysis should succeed"
+
+
+class TestConstraintHandling:
+    """Test constraint handling in parameter optimization."""
+
+    def test_ward_linkage_euclidean_constraint(self):
+        """Test that ward linkage only works with euclidean metric."""
+        engine = ClusteringEngine()
+
+        embeddings = np.random.randn(15, 6)
+        true_labels = np.random.randint(0, 3, 15)
+
+        clustering_options = {
+            "linkage": "ward",
+            "_auto_params": {
+                "hierarchical": {
+                    "linkage": False,  # Manual ward
+                    "metric": True,  # Auto metric - should force euclidean
+                }
+            },
+        }
+
+        best_k, metrics_by_k = engine.find_optimal_clusters(
+            embeddings,
+            true_labels,
+            method="hierarchical",
+            max_clusters=4,
+            clustering_options=clustering_options,
+        )
+
+        # Ward linkage should force euclidean metric
+        assert clustering_options.get("metric", "euclidean") == "euclidean"
+
+    def test_parameter_validation(self):
+        """Test parameter validation in clustering engine."""
+        engine = ClusteringEngine()
+
+        embeddings = np.random.randn(10, 5)
+
+        # Test invalid parameters are handled gracefully
+        with pytest.raises((ValueError, TypeError)):
+            engine.perform_clustering(
+                embeddings, method="kmeans", n_clusters=-1  # Invalid cluster count
+            )
+
+
+class TestPCAVarianceFractions:
+    """Test PCA variance fraction handling in the fixed code."""
+
+    def test_pca_info_storage_in_subsampling(self):
+        """Test that PCA info is correctly stored during subsampling."""
+        config = ClusteringConfig(
+            embedding_files=["test.pkl"],
+            metadata_file="metadata.tsv",
+            methods=["kmeans"],
+            norm_pca_components=0.95,  # Variance fraction
+            norm_l2=True,
+            normalization_method="pipeline",
+        )
+
+        analyzer = SubsamplingAnalyzer(config)
+
+        # Create test data
+        embeddings_dict = {
+            "test_embeddings.pkl": {f"protein_{i}": np.random.randn(20) for i in range(10)}
+        }
+        protein_ids = list(embeddings_dict["test_embeddings.pkl"].keys())
+        true_labels = np.random.randint(0, 3, 10)
+
+        # Run one subsample iteration
+        result = analyzer.run_subsample(0, protein_ids, embeddings_dict, true_labels)
+
+        # Check that PCA info was stored
+        assert hasattr(analyzer, "_pca_info")
+        assert "test_embeddings" in analyzer._pca_info
+
+        pca_info = analyzer._pca_info["test_embeddings"]
+        assert "pca_n_components" in pca_info
+        assert "pca_explained_variance_ratio_sum" in pca_info

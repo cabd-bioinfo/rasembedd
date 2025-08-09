@@ -114,42 +114,48 @@ python clustering_evaluation.py embeddings.pkl metadata.tsv \
 
 Customize clustering algorithm parameters:
 ```bash
-# Hierarchical clustering with manhattan distance and complete linkage
+# Auto optimization for all parameters (default behavior)
+python clustering_evaluation.py embeddings.pkl metadata.tsv \
+    --methods kmeans hierarchical dbscan
+
+# Use sklearn defaults for all parameters
+python clustering_evaluation.py embeddings.pkl metadata.tsv \
+    --methods kmeans hierarchical \
+    --kmeans-init default --kmeans-max-iter default \
+    --hierarchical-linkage default --hierarchical-metric default
+
+# Hierarchical clustering with specific parameters
 python clustering_evaluation.py embeddings.pkl metadata.tsv \
     --methods hierarchical \
     --hierarchical-metric manhattan \
     --hierarchical-linkage complete
 
-# HDBSCAN with custom parameters
+# Mixed mode: optimize some parameters, specify others
+python clustering_evaluation.py embeddings.pkl metadata.tsv \
+    --methods kmeans \
+    --kmeans-init auto \
+    --kmeans-max-iter 500
+
+# HDBSCAN with specific min_cluster_size, auto-optimize other parameters
 python clustering_evaluation.py embeddings.pkl metadata.tsv \
     --methods hdbscan \
     --hdbscan-min-cluster-size 10 \
-    --hdbscan-min-samples 5 \
-    --hdbscan-cluster-selection-epsilon 0.1
+    --hdbscan-min-samples auto \
+    --hdbscan-cluster-selection-epsilon auto
 
-# DBSCAN with custom eps and min_samples
+# DBSCAN with specific eps, auto-optimize min_samples
 python clustering_evaluation.py embeddings.pkl metadata.tsv \
     --methods dbscan \
     --dbscan-eps 0.3 \
-    --dbscan-min-samples 3
+    --dbscan-min-samples auto
 
-# DBSCAN with automatic parameter search (omit both flags)
-python clustering_evaluation.py embeddings.pkl metadata.tsv \
-    --methods dbscan
-
-# K-means with specific initialization and iterations
-python clustering_evaluation.py embeddings.pkl metadata.tsv \
-    --methods kmeans \
-    --kmeans-init random \
-    --kmeans-max-iter 500
-
-# Spectral clustering with nearest-neighbors affinity
+# Spectral clustering with mixed optimization
 python clustering_evaluation.py embeddings.pkl metadata.tsv \
     --methods spectral \
     --n-clusters 3 \
-    --spectral-affinity nearest_neighbors \
-    --spectral-n-neighbors 10 \
-    --spectral-assign-labels kmeans
+    --spectral-affinity rbf \
+    --spectral-gamma auto \
+    --spectral-assign-labels auto
 ```
 
 Run subsampling analysis:
@@ -206,44 +212,183 @@ Note: When using normalization-method pipeline, configure steps with the flags b
 
 ### Clustering Algorithm Parameters
 
+**New Parameter System:** All clustering parameters now support three modes:
+- **`auto`** (default): Triggers hyperparameter optimization to find the best values
+- **`default`**: Uses sklearn default values without optimization
+- **Specific value**: Uses the exact value provided without optimization
+
+This system provides maximum flexibility - users can rely on intelligent optimization by default, use sklearn defaults when needed, or specify exact parameter values for fine-grained control.
+
+## Hyperparameter Optimization
+
+When parameters are set to `auto` (default behavior), the tool performs comprehensive hyperparameter optimization using only internal clustering metrics to ensure unbiased evaluation.
+
+### Optimization Process by Method
+
+**K-means:**
+- Automatic k detection using elbow method (kneedle algorithm)
+- Initialization method optimization (k-means++ vs random)
+- Max iterations optimization for convergence
+
+**Hierarchical Clustering:**
+- Linkage method optimization (ward, complete, average, single)
+- Distance metric optimization (euclidean, manhattan, cosine, etc.)
+- Automatic k detection using elbow method
+- Constraint handling (ward linkage requires euclidean metric)
+
+**DBSCAN:**
+- K-distance analysis for eps candidate selection
+- Grid search over eps values from k-distance curve
+- Min_samples optimization across reasonable range
+- Composite scoring for best parameter combination
+
+**HDBSCAN:**
+- Min_cluster_size grid search
+- Min_samples optimization
+- Cluster_selection_epsilon optimization
+- Multi-dimensional parameter space exploration
+
+**Spectral Clustering:**
+- Automatic k detection using elbow method
+- Gamma parameter optimization for RBF kernel
+- Assignment method optimization (kmeans vs discretize)
+- N_neighbors optimization for nearest_neighbors affinity
+
+### Internal Metrics Used
+
+All optimization uses only internal metrics to maintain evaluation integrity:
+
+- **Silhouette Score**: Measures cluster cohesion and separation
+- **Calinski-Harabasz Index**: Ratio of between-cluster to within-cluster dispersion
+- **Davies-Bouldin Index**: Average similarity ratio of clusters
+- **Elbow Method**: Kneedle algorithm for automatic k detection
+
+### Optimization Flexibility
+
+The system supports three parameter modes for maximum flexibility:
+
+```bash
+# Full auto-optimization (default)
+python clustering_evaluation.py data.pkl metadata.tsv --methods kmeans
+
+# Mixed mode: specific k, auto init
+python clustering_evaluation.py data.pkl metadata.tsv \
+    --methods kmeans --n-clusters 5 --kmeans-init auto
+
+# Manual control with sklearn defaults
+python clustering_evaluation.py data.pkl metadata.tsv \
+    --methods hierarchical --hierarchical-linkage default
+
+# Expert mode: all parameters specified
+python clustering_evaluation.py data.pkl metadata.tsv \
+    --methods dbscan --dbscan-eps 0.3 --dbscan-min-samples 5
+```
+
 #### K-means Parameters
-| Argument | Default | Description |
-|----------|---------|-------------|
-| --kmeans-init | k-means++ | Initialization method: k-means++, random |
-| --kmeans-max-iter | 300 | Maximum number of iterations |
+| Argument | Default | Options | Description |
+|----------|---------|---------|-------------|
+| --kmeans-init | auto | auto, default, k-means++, random | Initialization method |
+| --kmeans-max-iter | auto | auto, default, \<integer\> | Maximum number of iterations |
+
+Examples:
+```bash
+# Auto optimization (default behavior)
+python clustering_evaluation.py embeddings.pkl metadata.tsv --kmeans-init auto --kmeans-max-iter auto
+
+# Use sklearn defaults
+python clustering_evaluation.py embeddings.pkl metadata.tsv --kmeans-init default --kmeans-max-iter default
+
+# Specific values
+python clustering_evaluation.py embeddings.pkl metadata.tsv --kmeans-init random --kmeans-max-iter 500
+
+# Mixed mode: optimize init, use specific max_iter
+python clustering_evaluation.py embeddings.pkl metadata.tsv --kmeans-init auto --kmeans-max-iter 200
+```
 
 #### Hierarchical Clustering Parameters
-| Argument | Default | Description |
-|----------|---------|-------------|
-| --hierarchical-linkage | complete | Linkage criterion: ward, complete, average, single |
-| --hierarchical-metric | euclidean | Distance metric: euclidean, manhattan, cosine, l1, l2 |
+| Argument | Default | Options | Description |
+|----------|---------|---------|-------------|
+| --hierarchical-linkage | auto | auto, default, ward, complete, average, single | Linkage criterion |
+| --hierarchical-metric | auto | auto, default, euclidean, manhattan, cosine, l1, l2 | Distance metric |
 
-Note: Ward linkage only supports euclidean metric. For other metrics like manhattan, use complete, average, or single linkage.
+Examples:
+```bash
+# Auto optimization (default)
+python clustering_evaluation.py embeddings.pkl metadata.tsv --methods hierarchical
+
+# Use sklearn defaults (complete linkage, euclidean metric)
+python clustering_evaluation.py embeddings.pkl metadata.tsv --hierarchical-linkage default --hierarchical-metric default
+
+# Specific configuration
+python clustering_evaluation.py embeddings.pkl metadata.tsv --hierarchical-linkage ward --hierarchical-metric euclidean
+
+# Mixed: optimize linkage, use manhattan metric
+python clustering_evaluation.py embeddings.pkl metadata.tsv --hierarchical-linkage auto --hierarchical-metric manhattan
+```
+
+Note: Ward linkage only supports euclidean metric. The optimization system respects this constraint.
 
 #### DBSCAN Parameters
-| Argument | Default | Description |
-|----------|---------|-------------|
-| --dbscan-eps | 0.5 | Maximum distance between samples in a neighborhood |
-| --dbscan-min-samples | 5 | Minimum samples in a neighborhood for core point |
+| Argument | Default | Options | Description |
+|----------|---------|---------|-------------|
+| --dbscan-eps | auto | auto, default, \<float\> | Maximum distance between samples in neighborhood |
+| --dbscan-min-samples | auto | auto, default, \<integer\> | Minimum samples in neighborhood for core point |
 
-If either parameter is omitted, the script performs a small parameter search using k-distance quantiles to propose eps candidates and tries a set of min_samples values. A composite score (valid clusters, silhouette, ARI, and Davies-Bouldin penalty) selects the best combination. All-noise solutions are rejected.
+Examples:
+```bash
+# Auto optimization using k-distance analysis (default)
+python clustering_evaluation.py embeddings.pkl metadata.tsv --methods dbscan
+
+# Use sklearn defaults (eps=0.5, min_samples=5)
+python clustering_evaluation.py embeddings.pkl metadata.tsv --dbscan-eps default --dbscan-min-samples default
+
+# Specific values
+python clustering_evaluation.py embeddings.pkl metadata.tsv --dbscan-eps 0.3 --dbscan-min-samples 3
+
+# Mixed: optimize eps, use specific min_samples
+python clustering_evaluation.py embeddings.pkl metadata.tsv --dbscan-eps auto --dbscan-min-samples 10
+```
+
+When optimization is enabled, the script performs k-distance analysis to propose eps candidates and tries multiple min_samples values. A composite score based on internal clustering metrics selects the best combination.
 
 #### HDBSCAN Parameters
-| Argument | Default | Description |
-|----------|---------|-------------|
-| --hdbscan-min-cluster-size | 5 | Minimum size of clusters |
-| --hdbscan-min-samples | None | Minimum samples for core points (None uses min_cluster_size) |
-| --hdbscan-cluster-selection-epsilon | 0.0 | Distance threshold for cluster selection |
+| Argument | Default | Options | Description |
+|----------|---------|---------|-------------|
+| --hdbscan-min-cluster-size | auto | auto, default, \<integer\> | Minimum size of clusters |
+| --hdbscan-min-samples | auto | auto, default, \<integer\> | Minimum samples for core points |
+| --hdbscan-cluster-selection-epsilon | auto | auto, default, \<float\> | Distance threshold for cluster selection |
 
-HDBSCAN is evaluated once per configuration; the observed number of clusters (excluding noise points labeled as -1) is reported in the results.
+Examples:
+```bash
+# Auto optimization (default)
+python clustering_evaluation.py embeddings.pkl metadata.tsv --methods hdbscan
+
+# Use sklearn defaults
+python clustering_evaluation.py embeddings.pkl metadata.tsv --hdbscan-min-cluster-size default --hdbscan-min-samples default
+
+# Specific configuration
+python clustering_evaluation.py embeddings.pkl metadata.tsv --hdbscan-min-cluster-size 10 --hdbscan-min-samples 5
+```
 
 #### Spectral Clustering Parameters
-| Argument | Default | Description |
-|----------|---------|-------------|
-| --spectral-affinity | rbf | Affinity function: rbf, nearest_neighbors, precomputed, precomputed_nearest_neighbors |
-| --spectral-assign-labels | kmeans | Label assignment strategy: kmeans, discretize |
-| --spectral-n-neighbors | 10 | Number of neighbors for nearest_neighbors affinity |
-| --spectral-gamma | auto | RBF kernel coefficient (omit flag to use sklearn default) |
+| Argument | Default | Options | Description |
+|----------|---------|---------|-------------|
+| --spectral-affinity | auto | auto, default, rbf, nearest_neighbors, precomputed | Affinity function |
+| --spectral-assign-labels | auto | auto, default, kmeans, discretize | Label assignment strategy |
+| --spectral-n-neighbors | auto | auto, default, \<integer\> | Number of neighbors for nearest_neighbors affinity |
+| --spectral-gamma | auto | auto, default, \<float\> | RBF kernel coefficient |
+
+Examples:
+```bash
+# Auto optimization (default)
+python clustering_evaluation.py embeddings.pkl metadata.tsv --methods spectral
+
+# Use sklearn defaults
+python clustering_evaluation.py embeddings.pkl metadata.tsv --spectral-affinity default --spectral-assign-labels default
+
+# Specific configuration
+python clustering_evaluation.py embeddings.pkl metadata.tsv --spectral-affinity rbf --spectral-gamma 0.1 --spectral-n-neighbors 15
+```
 
 #### Normalization Pipeline Options (when --normalization-method pipeline)
 | Argument | Description |
@@ -301,6 +446,86 @@ The script generates several output files in the specified directory:
 2. Run basic clustering evaluation
 3. Compare multiple embedding methods
 4. Analyze results
+
+## Best Practices
+
+### Parameter Strategy Recommendations
+
+**For Beginners:**
+- Start with auto-optimization (default): `--methods kmeans hierarchical dbscan`
+- Let the system find optimal parameters automatically
+- Review optimization plots to understand parameter selection
+
+**For Exploration:**
+- Use mixed mode to constrain some parameters while optimizing others:
+  ```bash
+  # Fix number of clusters, optimize other parameters
+  python clustering_evaluation.py data.pkl metadata.tsv \
+      --methods kmeans --n-clusters 5 --kmeans-init auto
+  ```
+
+**For Experts:**
+- Specify exact parameters when you have domain knowledge:
+  ```bash
+  # Manual parameter control
+  python clustering_evaluation.py data.pkl metadata.tsv \
+      --methods hierarchical \
+      --n-clusters 8 \
+      --hierarchical-linkage ward \
+      --hierarchical-metric euclidean
+  ```
+
+**For Reproducibility:**
+- Always specify exact parameter values in production
+- Use auto-optimization for parameter discovery, then lock in optimal values
+- Set random seeds for deterministic results
+
+### Method Selection Guidelines
+
+**K-means:** Best for spherical, similar-sized clusters
+- Use when you expect roughly equal cluster sizes
+- Good computational efficiency for large datasets
+- Auto k-detection works well with clear cluster structure
+
+**Hierarchical:** Best for nested cluster structures
+- Use when clusters may have hierarchical relationships
+- Good for small to medium datasets
+- Ward linkage + euclidean metric often works well
+
+**DBSCAN:** Best for irregular shapes and noise handling
+- Use when clusters have varying densities
+- Excellent for outlier detection
+- Auto-optimization handles parameter tuning complexity
+
+**HDBSCAN:** Best for varying density clusters
+- Use when clusters have significantly different densities
+- Superior noise handling compared to DBSCAN
+- Builds cluster hierarchy automatically
+
+**Spectral:** Best for complex cluster shapes
+- Use when clusters are not convex
+- Good for manifold-like structures
+- Higher computational cost but better flexibility
+
+### Data Preparation Tips
+
+**Normalization Strategy:**
+- Use PCA for high-dimensional embeddings
+- Apply L2 normalization for cosine-like similarity
+- Center and scale features when units differ significantly
+
+**Quality Assessment:**
+- Check for missing proteins between embeddings and metadata
+- Verify embedding dimensionality consistency
+- Ensure sufficient samples per expected cluster
+
+### Optimization Workflow
+
+1. **Initial Exploration:** Run with auto-optimization on multiple methods
+2. **Parameter Analysis:** Review optimization plots and chosen parameters
+3. **Refinement:** Use mixed mode to constrain problematic parameters
+4. **Validation:** Test final parameters on held-out data
+5. **Production:** Lock in specific parameter values for consistency
 
 ## Interpretation Guide
 
