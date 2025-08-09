@@ -1524,8 +1524,7 @@ class ClusteringEngine:
                 "silhouette": 2,
                 "calinski_harabasz": 2,
                 "davies_bouldin": 2,
-                "adjusted_rand": 2,
-                "v_measure": 2,
+                "elbow": 2,
             }
             metrics_by_k = {
                 2: self.evaluate_clustering(
