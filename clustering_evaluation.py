@@ -55,10 +55,12 @@ except ImportError:
 
 def convert_numpy_types(obj):
     """Convert numpy types to native Python types for JSON serialization."""
-    if isinstance(obj, np.integer):
+    if isinstance(obj, (np.integer, np.int32, np.int64)):
         return int(obj)
-    elif isinstance(obj, np.floating):
+    elif isinstance(obj, (np.floating, np.float32, np.float64)):
         return float(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
     elif isinstance(obj, dict):
@@ -367,6 +369,14 @@ class ClusteringEngine:
             # Extract eps and min_samples, remove from clustering_kwargs to avoid duplication
             eps = clustering_kwargs.pop("eps", 0.5)
             min_samples = clustering_kwargs.pop("min_samples", 5)
+
+            # Validate eps parameter - must be positive
+            if eps <= 0:
+                print(
+                    f"Warning: DBSCAN eps parameter must be positive, got {eps}. Using default 0.5."
+                )
+                eps = 0.5
+
             clusterer = DBSCAN(eps=eps, min_samples=min_samples, **clustering_kwargs)
             labels = clusterer.fit_predict(embeddings)
 
@@ -1431,9 +1441,17 @@ class ClusteringEngine:
                     candidate_eps = sorted(
                         {float(np.quantile(kth_dist, q)) for q in quantiles} | {eps_default}
                     )
+                    # Filter out non-positive eps values
+                    candidate_eps = [eps for eps in candidate_eps if eps > 0]
+                    if not candidate_eps:  # If all candidates are <= 0, use default
+                        candidate_eps = [eps_default]
                 except Exception:
                     # Fallback to a simple eps list around default
                     candidate_eps = sorted({eps_default * f for f in [0.5, 0.75, 1.0, 1.25, 1.5]})
+                    # Filter out non-positive eps values
+                    candidate_eps = [eps for eps in candidate_eps if eps > 0]
+                    if not candidate_eps:  # If all candidates are <= 0, use default
+                        candidate_eps = [eps_default]
             else:
                 candidate_eps = [user_eps]  # Use user-provided value
 
@@ -1488,8 +1506,14 @@ class ClusteringEngine:
                 metrics_by_k[n_c] = metrics
 
             # Update options so downstream run uses the selected params
+            # Validate eps parameter before storing
+            best_eps = best_result[3]
+            if best_eps <= 0:
+                print(f"Warning: Optimized DBSCAN eps={best_eps} is invalid. Using default 0.5.")
+                best_eps = 0.5
+
             clustering_options["eps"], clustering_options["min_samples"] = (
-                best_result[3],
+                best_eps,
                 best_result[4],
             )
             n_clusters_found = max(best_result[2], 0)
@@ -2492,8 +2516,10 @@ class ClusteringAnalyzer:
                 for embedding_file, emb_result in embedding_results.items():
                     emb_name = os.path.splitext(os.path.basename(embedding_file))[0]
                     for method, result in emb_result["results"].items():
+                        # Convert numpy types to native Python types before JSON serialization
+                        converted_params = convert_numpy_types(result.params)
                         header_lines.append(
-                            f"# used_params.{emb_name}.{method}: {json.dumps(result.params, ensure_ascii=False)}"
+                            f"# used_params.{emb_name}.{method}: {json.dumps(converted_params, ensure_ascii=False)}"
                         )
                 with open(comments_path, "w", encoding="utf-8") as f:
                     f.write("\n".join(header_lines) + "\n")
