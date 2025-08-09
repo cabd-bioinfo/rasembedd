@@ -152,6 +152,14 @@ class DataLoader:
     ) -> Tuple[np.ndarray, pd.DataFrame, List[str]]:
         """Prepare aligned embeddings and labels for clustering."""
 
+        # Validate that the ID column exists in metadata
+        if id_column not in metadata.columns:
+            available_columns = ", ".join(metadata.columns.tolist())
+            raise ValueError(
+                f"ID column '{id_column}' not found in metadata. "
+                f"Available columns: {available_columns}"
+            )
+
         # Get common protein IDs
         embedding_ids = set(embeddings.keys())
         metadata_ids = set(metadata[id_column].values)
@@ -2036,6 +2044,14 @@ class ClusteringAnalyzer:
         # Load metadata
         metadata = self.data_loader.load_metadata(self.config.metadata_file)
 
+        # Validate that the label column exists in metadata
+        if self.config.label_column not in metadata.columns:
+            available_columns = ", ".join(metadata.columns.tolist())
+            raise ValueError(
+                f"Label column '{self.config.label_column}' not found in metadata. "
+                f"Available columns: {available_columns}"
+            )
+
         # Load all embeddings
         embeddings_dict = {}
         for embedding_file in self.config.embedding_files:
@@ -2481,8 +2497,10 @@ class ClusteringAnalyzer:
                         )
                 with open(comments_path, "w", encoding="utf-8") as f:
                     f.write("\n".join(header_lines) + "\n")
-            except Exception:
+                print(f"Successfully wrote comments file: {comments_path}")
+            except Exception as e:
                 # Don't fail saving results if comments sidecar cannot be written
+                print(f"Warning: Failed to write comments file {comments_path}: {e}")
                 pass
 
         if params_records:
