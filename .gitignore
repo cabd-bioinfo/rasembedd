@@ -11,9 +11,13 @@ __pycache__
 htmlcov/
 .pytest_cache/
 .benchmarks/
+
+
+# Data files
 *_results/
 RAS_ALL/
 LargeNECDataset/
+ChakrabortyALL/
 
 # IDE and editor files
 .vscode/
