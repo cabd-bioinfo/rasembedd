@@ -9,6 +9,56 @@ from .base_model import BaseEmbeddingModel
 
 
 class ESMModel(BaseEmbeddingModel):
+    def get_residue_embeddings(self, sequence: str, seq_id: str) -> np.ndarray:
+        """Return per-residue embeddings (excluding special tokens). Shape: [seq_len, dim]"""
+        processed_sequence = self.preprocess_sequence(sequence)
+        encoded = self.tokenizer(
+            processed_sequence,
+            add_special_tokens=True,
+            padding=True,
+            max_length=self.max_length,
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors="pt",
+        )
+        input_ids = encoded["input_ids"].to(self.device)
+        attention_mask = encoded["attention_mask"].to(self.device)
+        with torch.no_grad():
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+            token_embeddings = outputs.last_hidden_state  # (batch, seq_len, dim)
+            # Remove batch dimension and special tokens (assume 1st and last are special)
+            valid_len = int(attention_mask.sum().item())
+            residue_embeddings = token_embeddings[0, 1 : valid_len - 1, :]
+            return residue_embeddings.cpu().numpy()
+
+    def get_mean_embedding(self, sequence: str, seq_id: str) -> np.ndarray:
+        """Return mean-pooled embedding (shape: [dim])."""
+        processed_sequence = self.preprocess_sequence(sequence)
+        encoded = self.tokenizer(
+            processed_sequence,
+            add_special_tokens=True,
+            padding=True,
+            max_length=self.max_length,
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors="pt",
+        )
+        input_ids = encoded["input_ids"].to(self.device)
+        attention_mask = encoded["attention_mask"].to(self.device)
+        with torch.no_grad():
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+            token_embeddings = outputs.last_hidden_state
+            mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size())
+            masked_embeddings = token_embeddings * mask_expanded
+            sum_embeddings = torch.sum(masked_embeddings, dim=1)
+            sum_mask = torch.clamp(mask_expanded.sum(dim=1), min=1e-9)
+            mean_embedding = sum_embeddings / sum_mask
+            return mean_embedding.cpu().numpy().squeeze()
+
+    def generate_embedding(self, sequence: str, seq_id: str) -> np.ndarray:
+        """Legacy interface: returns mean embedding (for backward compatibility)."""
+        return self.get_mean_embedding(sequence, seq_id)
+
     """ESM model implementation using transformers library."""
 
     def __init__(self, model_name: str = None, device: torch.device = None, **kwargs):

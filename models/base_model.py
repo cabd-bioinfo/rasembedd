@@ -30,9 +30,18 @@ class BaseEmbeddingModel(ABC):
         pass
 
     @abstractmethod
-    def generate_embedding(self, sequence: str, seq_id: str) -> np.ndarray:
-        """Generate embedding for a single sequence."""
+    def get_residue_embeddings(self, sequence: str, seq_id: str) -> np.ndarray:
+        """Return per-residue embeddings for a single sequence (shape: [seq_len, dim])."""
         pass
+
+    @abstractmethod
+    def get_mean_embedding(self, sequence: str, seq_id: str) -> np.ndarray:
+        """Return mean-pooled embedding for a single sequence (shape: [dim])."""
+        pass
+
+    def generate_embedding(self, sequence: str, seq_id: str) -> np.ndarray:
+        """Legacy interface: returns mean embedding (for backward compatibility)."""
+        return self.get_mean_embedding(sequence, seq_id)
 
     def generate_embeddings(self, sequences: Dict[str, str]) -> Dict[str, np.ndarray]:
         """Generate embeddings for multiple sequences."""

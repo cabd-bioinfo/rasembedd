@@ -9,6 +9,70 @@ from .base_model import BaseEmbeddingModel
 
 
 class ESMCModel(BaseEmbeddingModel):
+    def get_residue_embeddings(self, sequence: str, seq_id: str) -> np.ndarray:
+        """Return per-residue embeddings (excluding special tokens). Shape: [seq_len, dim]"""
+        processed_sequence = self.preprocess_sequence(sequence)
+        protein = self.ESMProtein(sequence=processed_sequence)
+        protein_tensor = self.model.encode(protein)
+        logits_config = self.LogitsConfig(
+            sequence=False,  # Return token-level embeddings
+            return_embeddings=True,
+            return_hidden_states=True,
+            ith_hidden_layer=self.layer_idx,
+        )
+        logits_output = self.model.logits(protein_tensor, logits_config)
+        if logits_output.hidden_states is not None and self.layer_idx != -1:
+            embeddings = logits_output.hidden_states
+            if embeddings.dim() == 4:
+                if embeddings.shape[0] == 1:
+                    embeddings = embeddings.squeeze(0)
+                else:
+                    embeddings = embeddings[0]
+        elif logits_output.embeddings is not None:
+            embeddings = logits_output.embeddings
+        else:
+            raise RuntimeError("No embeddings returned from ESMC model")
+        # Remove batch dimension if present
+        if embeddings.dim() == 3:
+            residue_embeddings = embeddings[0]
+        else:
+            residue_embeddings = embeddings
+        return residue_embeddings.detach().cpu().numpy()
+
+    def get_mean_embedding(self, sequence: str, seq_id: str) -> np.ndarray:
+        """Return mean-pooled embedding (shape: [dim])."""
+        processed_sequence = self.preprocess_sequence(sequence)
+        protein = self.ESMProtein(sequence=processed_sequence)
+        protein_tensor = self.model.encode(protein)
+        logits_config = self.LogitsConfig(
+            sequence=False,  # Return token-level embeddings
+            return_embeddings=True,
+            return_hidden_states=True,
+            ith_hidden_layer=self.layer_idx,
+        )
+        logits_output = self.model.logits(protein_tensor, logits_config)
+        if logits_output.hidden_states is not None and self.layer_idx != -1:
+            embeddings = logits_output.hidden_states
+            if embeddings.dim() == 4:
+                if embeddings.shape[0] == 1:
+                    embeddings = embeddings.squeeze(0)
+                else:
+                    embeddings = embeddings[0]
+        elif logits_output.embeddings is not None:
+            embeddings = logits_output.embeddings
+        else:
+            raise RuntimeError("No embeddings returned from ESMC model")
+        # Mean pool over sequence length (dim=1)
+        if embeddings.dim() == 3:
+            embedding = torch.mean(embeddings, dim=1)
+        else:
+            embedding = embeddings
+        return embedding.detach().cpu().numpy().squeeze()
+
+    def generate_embedding(self, sequence: str, seq_id: str) -> np.ndarray:
+        """Legacy interface: returns mean embedding (for backward compatibility)."""
+        return self.get_mean_embedding(sequence, seq_id)
+
     """ESMC model implementation using ESM's native SDK."""
 
     def __init__(self, model_name: str = None, device: torch.device = None, **kwargs):

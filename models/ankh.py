@@ -10,6 +10,66 @@ from .base_model import BaseEmbeddingModel
 
 
 class AnkhModel(BaseEmbeddingModel):
+    def get_residue_embeddings(self, sequence: str, seq_id: str) -> np.ndarray:
+        """Return per-residue embeddings (excluding special/prefix tokens). Shape: [seq_len, dim]"""
+        processed_sequence = self.preprocess_sequence(sequence)
+        if self.max_length is None:
+            max_len = min(len(processed_sequence) + 10, self.tokenizer.model_max_length)
+        else:
+            max_len = min(self.max_length, self.tokenizer.model_max_length)
+        encoded = self.tokenizer(
+            processed_sequence,
+            add_special_tokens=True,
+            return_tensors="pt",
+            is_split_into_words=False,
+            padding="max_length",
+            max_length=max_len,
+            truncation=True,
+            return_attention_mask=True,
+        )
+        input_ids = encoded["input_ids"].to(self.device)
+        attention_mask = encoded["attention_mask"].to(self.device)
+        with torch.no_grad():
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+            token_embeddings = outputs.last_hidden_state  # (batch, seq_len, dim)
+            valid_len = int(attention_mask.sum().item())
+            # Remove batch dimension and special/prefix tokens (first 2, last 1)
+            residue_embeddings = token_embeddings[0, 2 : valid_len - 1, :]
+            return residue_embeddings.cpu().numpy()
+
+    def get_mean_embedding(self, sequence: str, seq_id: str) -> np.ndarray:
+        """Return mean-pooled embedding (shape: [dim])."""
+        processed_sequence = self.preprocess_sequence(sequence)
+        if self.max_length is None:
+            max_len = min(len(processed_sequence) + 10, self.tokenizer.model_max_length)
+        else:
+            max_len = min(self.max_length, self.tokenizer.model_max_length)
+        encoded = self.tokenizer(
+            processed_sequence,
+            add_special_tokens=True,
+            return_tensors="pt",
+            is_split_into_words=False,
+            padding="max_length",
+            max_length=max_len,
+            truncation=True,
+            return_attention_mask=True,
+        )
+        input_ids = encoded["input_ids"].to(self.device)
+        attention_mask = encoded["attention_mask"].to(self.device)
+        with torch.no_grad():
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+            token_embeddings = outputs.last_hidden_state
+            mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size())
+            masked_embeddings = token_embeddings * mask_expanded
+            sum_embeddings = torch.sum(masked_embeddings, dim=1)
+            sum_mask = torch.clamp(mask_expanded.sum(dim=1), min=1e-9)
+            mean_embedding = sum_embeddings / sum_mask
+            return mean_embedding.cpu().numpy().squeeze()
+
+    def generate_embedding(self, sequence: str, seq_id: str) -> np.ndarray:
+        """Legacy interface: returns mean embedding (for backward compatibility)."""
+        return self.get_mean_embedding(sequence, seq_id)
+
     """Ankh model implementation using T5 architecture."""
 
     def __init__(self, model_name: str = None, device: torch.device = None, **kwargs):
