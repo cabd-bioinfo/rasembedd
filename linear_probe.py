@@ -1147,7 +1147,7 @@ def main():
     )
     parser.add_argument(
         "--cluster-col",
-        default="cluster",
+        default="all",
         help="Column name(s) for cluster assignments. Use 'all' to process all non-ID columns, or comma-separated list for multiple columns",
     )
     parser.add_argument(
