@@ -36,10 +36,10 @@ class ProstT5Model(BaseEmbeddingModel):
         with torch.no_grad():
             outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
             token_embeddings = outputs.last_hidden_state  # (batch, seq_len, dim)
-            # Remove batch dimension and special/prefix tokens
-            # For ProstT5, typically skip [CLS] and prefix (first 2 tokens), and [SEP] at end
-            actual_seq_start = 2
-            seq_length = attention_mask.sum().item() - 1
+            # Remove batch dimension and special tokens
+            # For ProstT5: skip prefix token (e.g., <AA2fold>) at index 0 and </s> at the end
+            actual_seq_start = 1  # Skip the prefix token
+            seq_length = attention_mask.sum().item() - 1  # Subtract 1 to exclude </s>
             actual_seq_end = min(seq_length, token_embeddings.size(1))
             if actual_seq_end > actual_seq_start:
                 residue_embeddings = token_embeddings[0, actual_seq_start:actual_seq_end, :]
@@ -71,7 +71,8 @@ class ProstT5Model(BaseEmbeddingModel):
             # Use same logic as in generate_embedding for mean pooling
             mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size())
             # Remove special/prefix tokens for mean pooling
-            actual_seq_start = 2
+            # For ProstT5: skip prefix token (e.g., <AA2fold>) at index 0 and </s> at the end
+            actual_seq_start = 1  # Skip the prefix token
             seq_length = attention_mask.sum().item() - 1
             actual_seq_end = min(seq_length, token_embeddings.size(1))
             if actual_seq_end > actual_seq_start:

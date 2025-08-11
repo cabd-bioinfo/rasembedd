@@ -32,8 +32,9 @@ class ProtT5Model(BaseEmbeddingModel):
             outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
             token_embeddings = outputs.last_hidden_state  # (batch, seq_len, dim)
             valid_len = int(attention_mask.sum().item())
-            # Remove batch dimension and special tokens (assume 1st and last are special)
-            residue_embeddings = token_embeddings[0, 1 : valid_len - 1, :]
+            # Remove batch dimension and special tokens
+            # For ProtT5: no prefix tokens, just exclude </s> at the end
+            residue_embeddings = token_embeddings[0, 0 : valid_len - 1, :]
             return residue_embeddings.cpu().numpy()
 
     def get_mean_embedding(self, sequence: str, seq_id: str) -> np.ndarray:
