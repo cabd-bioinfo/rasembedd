@@ -1,0 +1,41 @@
+embedding	method	n_clusters	init	max_iter	linkage	metric	eps	min_samples	min_cluster_size	cluster_selection_epsilon	affinity	assign_labels	n_neighbors	gamma
+ankh_s2s_embeddings	kmeans	6.0	k-means++	100.0
+ankh_s2s_embeddings	hierarchical	9.0			ward	euclidean
+ankh_s2s_embeddings	dbscan						0.4986651593645946	2.0
+ankh_s2s_embeddings	hdbscan								3.0	0.0
+ankh_s2s_embeddings	spectral	6.0									nearest_neighbors	kmeans	6.0	1.0
+esmc_embeddings	kmeans	6.0	k-means++	100.0
+esmc_embeddings	hierarchical	6.0			ward	euclidean
+esmc_embeddings	dbscan						0.5	2.0
+esmc_embeddings	hdbscan								3.0	0.0
+esmc_embeddings	spectral	7.0									rbf	kmeans	10.0	1.0
+gdomain_ankh_s2s_embeddings	kmeans	7.0	k-means++	100.0
+gdomain_ankh_s2s_embeddings	hierarchical	10.0			complete	euclidean
+gdomain_ankh_s2s_embeddings	dbscan						0.7451518774032593	2.0
+gdomain_ankh_s2s_embeddings	hdbscan								3.0	0.0
+gdomain_ankh_s2s_embeddings	spectral	5.0									rbf	kmeans	10.0	1.0
+gdomain_esmc_embeddings	kmeans	6.0	k-means++	100.0
+gdomain_esmc_embeddings	hierarchical	8.0			ward	euclidean
+gdomain_esmc_embeddings	dbscan						0.6121758284438337	2.0
+gdomain_esmc_embeddings	hdbscan								3.0	0.0
+gdomain_esmc_embeddings	spectral	7.0									rbf	kmeans	10.0	1.0
+gdomain_prost_t5_embeddings	kmeans	6.0	k-means++	100.0
+gdomain_prost_t5_embeddings	hierarchical	10.0			ward	euclidean
+gdomain_prost_t5_embeddings	dbscan						0.6616920709609985	3.0
+gdomain_prost_t5_embeddings	hdbscan								3.0	0.0
+gdomain_prost_t5_embeddings	spectral	7.0									rbf	kmeans	10.0	1.0
+gdomain_prot_t5_embeddings	kmeans	6.0	k-means++	100.0
+gdomain_prot_t5_embeddings	hierarchical	6.0			ward	euclidean
+gdomain_prot_t5_embeddings	dbscan						0.7954393148422241	2.0
+gdomain_prot_t5_embeddings	hdbscan								3.0	0.0
+gdomain_prot_t5_embeddings	spectral	7.0									rbf	kmeans	10.0	1.0
+prost_t5_embeddings	kmeans	5.0	k-means++	100.0
+prost_t5_embeddings	hierarchical	4.0			average	euclidean
+prost_t5_embeddings	dbscan						0.6547378420829775	2.0
+prost_t5_embeddings	hdbscan								2.0	0.0
+prost_t5_embeddings	spectral	7.0									rbf	kmeans	10.0	4.093795299530029
+protT5	kmeans	6.0	k-means++	100.0
+protT5	hierarchical	8.0			ward	euclidean
+protT5	dbscan						0.5	2.0
+protT5	hdbscan								3.0	0.0
+protT5	spectral	7.0									rbf	kmeans	10.0	1.0
