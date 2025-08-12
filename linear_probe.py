@@ -211,6 +211,9 @@ class LinearProbe:
             print(f"Processing all cluster columns: {cluster_cols_list}")
         elif isinstance(cluster_cols, str):
             cluster_cols_list = [cluster_cols]
+        else:
+            # Handle list of cluster columns
+            cluster_cols_list = cluster_cols
 
         # Validate cluster columns exist
         missing_cols = [col for col in cluster_cols_list if col not in cluster_df.columns]
