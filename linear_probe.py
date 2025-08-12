@@ -245,6 +245,18 @@ class LinearProbe:
 
             # Filter out rows with missing cluster assignments for this column
             col_subset = cluster_df.dropna(subset=[cluster_col])
+
+            # Filter out unclustered proteins (typically labeled as -1, could be integer or string)
+            before_filter = len(col_subset)
+            col_subset = col_subset[
+                (col_subset[cluster_col] != -1) & (col_subset[cluster_col] != "-1")
+            ]
+            after_filter = len(col_subset)
+            if before_filter != after_filter:
+                print(
+                    f"Filtered out {before_filter - after_filter} unclustered proteins (labeled as -1)"
+                )
+
             col_cluster_ids = set(col_subset[protein_id_col].values)
             col_common_ids = embedding_ids & col_cluster_ids
 
