@@ -67,8 +67,575 @@ def mean_pool_embedding(embedding, mask=None):
     return embedding.mean(axis=0)
 
 
+# --- Mutation policy helper ---
+STANDARD_AAS = list("ACDEFGHIKLMNPQRSTVWY")
+
+# Minimal embedded BLOSUM62 scores for standard 20 AAs (symmetric). Values from common tables.
+# For brevity and to avoid external dependency resolution issues, include a compact subset via dict-of-dicts.
+# Note: This matrix is used only for relative sampling; exact values need not be exhaustive beyond 20x20.
+BLOSUM62 = {
+    "A": {
+        "A": 4,
+        "C": 0,
+        "D": -2,
+        "E": -1,
+        "F": -2,
+        "G": 0,
+        "H": -2,
+        "I": -1,
+        "K": -1,
+        "L": -1,
+        "M": -1,
+        "N": -2,
+        "P": -1,
+        "Q": -1,
+        "R": -1,
+        "S": 1,
+        "T": 0,
+        "V": 0,
+        "W": -3,
+        "Y": -2,
+    },
+    "C": {
+        "A": 0,
+        "C": 9,
+        "D": -3,
+        "E": -4,
+        "F": -2,
+        "G": -3,
+        "H": -3,
+        "I": -1,
+        "K": -3,
+        "L": -1,
+        "M": -1,
+        "N": -3,
+        "P": -3,
+        "Q": -3,
+        "R": -3,
+        "S": -1,
+        "T": -1,
+        "V": -1,
+        "W": -2,
+        "Y": -2,
+    },
+    "D": {
+        "A": -2,
+        "C": -3,
+        "D": 6,
+        "E": 2,
+        "F": -3,
+        "G": -1,
+        "H": -1,
+        "I": -3,
+        "K": -1,
+        "L": -4,
+        "M": -3,
+        "N": 1,
+        "P": -1,
+        "Q": 0,
+        "R": -2,
+        "S": 0,
+        "T": -1,
+        "V": -3,
+        "W": -4,
+        "Y": -3,
+    },
+    "E": {
+        "A": -1,
+        "C": -4,
+        "D": 2,
+        "E": 5,
+        "F": -3,
+        "G": -2,
+        "H": 0,
+        "I": -3,
+        "K": 1,
+        "L": -3,
+        "M": -2,
+        "N": 0,
+        "P": -1,
+        "Q": 2,
+        "R": 0,
+        "S": 0,
+        "T": -1,
+        "V": -2,
+        "W": -3,
+        "Y": -2,
+    },
+    "F": {
+        "A": -2,
+        "C": -2,
+        "D": -3,
+        "E": -3,
+        "F": 6,
+        "G": -3,
+        "H": -1,
+        "I": 0,
+        "K": -3,
+        "L": 0,
+        "M": 0,
+        "N": -3,
+        "P": -4,
+        "Q": -3,
+        "R": -3,
+        "S": -2,
+        "T": -2,
+        "V": -1,
+        "W": 1,
+        "Y": 3,
+    },
+    "G": {
+        "A": 0,
+        "C": -3,
+        "D": -1,
+        "E": -2,
+        "F": -3,
+        "G": 6,
+        "H": -2,
+        "I": -4,
+        "K": -2,
+        "L": -4,
+        "M": -3,
+        "N": 0,
+        "P": -2,
+        "Q": -2,
+        "R": -2,
+        "S": 0,
+        "T": -2,
+        "V": -3,
+        "W": -2,
+        "Y": -3,
+    },
+    "H": {
+        "A": -2,
+        "C": -3,
+        "D": -1,
+        "E": 0,
+        "F": -1,
+        "G": -2,
+        "H": 8,
+        "I": -3,
+        "K": -1,
+        "L": -3,
+        "M": -2,
+        "N": 1,
+        "P": -2,
+        "Q": 0,
+        "R": 0,
+        "S": -1,
+        "T": -2,
+        "V": -3,
+        "W": -2,
+        "Y": 2,
+    },
+    "I": {
+        "A": -1,
+        "C": -1,
+        "D": -3,
+        "E": -3,
+        "F": 0,
+        "G": -4,
+        "H": -3,
+        "I": 4,
+        "K": -3,
+        "L": 2,
+        "M": 1,
+        "N": -3,
+        "P": -3,
+        "Q": -3,
+        "R": -3,
+        "S": -2,
+        "T": -1,
+        "V": 3,
+        "W": -3,
+        "Y": -1,
+    },
+    "K": {
+        "A": -1,
+        "C": -3,
+        "D": -1,
+        "E": 1,
+        "F": -3,
+        "G": -2,
+        "H": -1,
+        "I": -3,
+        "K": 5,
+        "L": -2,
+        "M": -1,
+        "N": 0,
+        "P": -1,
+        "Q": 1,
+        "R": 2,
+        "S": 0,
+        "T": -1,
+        "V": -2,
+        "W": -3,
+        "Y": -2,
+    },
+    "L": {
+        "A": -1,
+        "C": -1,
+        "D": -4,
+        "E": -3,
+        "F": 0,
+        "G": -4,
+        "H": -3,
+        "I": 2,
+        "K": -2,
+        "L": 4,
+        "M": 2,
+        "N": -3,
+        "P": -3,
+        "Q": -2,
+        "R": -2,
+        "S": -2,
+        "T": -1,
+        "V": 1,
+        "W": -2,
+        "Y": -1,
+    },
+    "M": {
+        "A": -1,
+        "C": -1,
+        "D": -3,
+        "E": -2,
+        "F": 0,
+        "G": -3,
+        "H": -2,
+        "I": 1,
+        "K": -1,
+        "L": 2,
+        "M": 5,
+        "N": -2,
+        "P": -2,
+        "Q": 0,
+        "R": -1,
+        "S": -1,
+        "T": -1,
+        "V": 1,
+        "W": -1,
+        "Y": -1,
+    },
+    "N": {
+        "A": -2,
+        "C": -3,
+        "D": 1,
+        "E": 0,
+        "F": -3,
+        "G": 0,
+        "H": 1,
+        "I": -3,
+        "K": 0,
+        "L": -3,
+        "M": -2,
+        "N": 6,
+        "P": -2,
+        "Q": 0,
+        "R": 0,
+        "S": 1,
+        "T": 0,
+        "V": -3,
+        "W": -4,
+        "Y": -2,
+    },
+    "P": {
+        "A": -1,
+        "C": -3,
+        "D": -1,
+        "E": -1,
+        "F": -4,
+        "G": -2,
+        "H": -2,
+        "I": -3,
+        "K": -1,
+        "L": -3,
+        "M": -2,
+        "N": -2,
+        "P": 7,
+        "Q": -1,
+        "R": -2,
+        "S": -1,
+        "T": -1,
+        "V": -2,
+        "W": -4,
+        "Y": -3,
+    },
+    "Q": {
+        "A": -1,
+        "C": -3,
+        "D": 0,
+        "E": 2,
+        "F": -3,
+        "G": -2,
+        "H": 0,
+        "I": -3,
+        "K": 1,
+        "L": -2,
+        "M": 0,
+        "N": 0,
+        "P": -1,
+        "Q": 5,
+        "R": 1,
+        "S": 0,
+        "T": -1,
+        "V": -2,
+        "W": -2,
+        "Y": -1,
+    },
+    "R": {
+        "A": -1,
+        "C": -3,
+        "D": -2,
+        "E": 0,
+        "F": -3,
+        "G": -2,
+        "H": 0,
+        "I": -3,
+        "K": 2,
+        "L": -2,
+        "M": -1,
+        "N": 0,
+        "P": -2,
+        "Q": 1,
+        "R": 5,
+        "S": -1,
+        "T": -1,
+        "V": -3,
+        "W": -3,
+        "Y": -2,
+    },
+    "S": {
+        "A": 1,
+        "C": -1,
+        "D": 0,
+        "E": 0,
+        "F": -2,
+        "G": 0,
+        "H": -1,
+        "I": -2,
+        "K": 0,
+        "L": -2,
+        "M": -1,
+        "N": 1,
+        "P": -1,
+        "Q": 0,
+        "R": -1,
+        "S": 4,
+        "T": 1,
+        "V": -2,
+        "W": -3,
+        "Y": -2,
+    },
+    "T": {
+        "A": 0,
+        "C": -1,
+        "D": -1,
+        "E": -1,
+        "F": -2,
+        "G": -2,
+        "H": -2,
+        "I": -1,
+        "K": -1,
+        "L": -1,
+        "M": -1,
+        "N": 0,
+        "P": -1,
+        "Q": -1,
+        "R": -1,
+        "S": 1,
+        "T": 5,
+        "V": 0,
+        "W": -2,
+        "Y": -2,
+    },
+    "V": {
+        "A": 0,
+        "C": -1,
+        "D": -3,
+        "E": -2,
+        "F": -1,
+        "G": -3,
+        "H": -3,
+        "I": 3,
+        "K": -2,
+        "L": 1,
+        "M": 1,
+        "N": -3,
+        "P": -2,
+        "Q": -2,
+        "R": -3,
+        "S": -2,
+        "T": 0,
+        "V": 4,
+        "W": -3,
+        "Y": -1,
+    },
+    "W": {
+        "A": -3,
+        "C": -2,
+        "D": -4,
+        "E": -3,
+        "F": 1,
+        "G": -2,
+        "H": -2,
+        "I": -3,
+        "K": -3,
+        "L": -2,
+        "M": -1,
+        "N": -4,
+        "P": -4,
+        "Q": -2,
+        "R": -3,
+        "S": -3,
+        "T": -2,
+        "V": -3,
+        "W": 11,
+        "Y": 2,
+    },
+    "Y": {
+        "A": -2,
+        "C": -2,
+        "D": -3,
+        "E": -2,
+        "F": 3,
+        "G": -3,
+        "H": 2,
+        "I": -1,
+        "K": -2,
+        "L": -1,
+        "M": -1,
+        "N": -2,
+        "P": -3,
+        "Q": -1,
+        "R": -2,
+        "S": -2,
+        "T": -2,
+        "V": -1,
+        "W": 2,
+        "Y": 7,
+    },
+}
+
+
+def _blosum_score(matrix, a, b, default=-4):
+    try:
+        return matrix[a][b]
+    except Exception:
+        return default
+
+
+def choose_mutant_aa(
+    orig_aa: str,
+    policy: str,
+    rng: np.random.Generator,
+    blosum_name: str = "blosum62",
+    blosum_temp: float = 1.0,
+) -> str:
+    policy = (policy or "alanine").lower()
+    if policy == "alanine":
+        return "A"
+    if policy in ("to-x", "x"):
+        return "X"
+    if policy == "random":
+        candidates = [aa for aa in STANDARD_AAS if aa != orig_aa]
+        return rng.choice(candidates)
+    if policy == "blosum":
+        # Use embedded BLOSUM62
+        matrix = BLOSUM62
+        scores = np.array([_blosum_score(matrix, orig_aa, aa, default=-4) for aa in STANDARD_AAS])
+        # Exclude self to ensure a change
+        scores = scores.astype(float)
+        for idx, aa in enumerate(STANDARD_AAS):
+            if aa == orig_aa:
+                scores[idx] = -np.inf
+        # Convert to probabilities via softmax with temperature
+        max_s = np.nanmax(scores[np.isfinite(scores)]) if np.any(np.isfinite(scores)) else 0.0
+        logits = (scores - max_s) / max(1e-6, blosum_temp)
+        # Handle -inf
+        with np.errstate(over="ignore", invalid="ignore"):
+            exp_logits = np.where(np.isfinite(logits), np.exp(logits), 0.0)
+        probs = (
+            exp_logits / exp_logits.sum()
+            if exp_logits.sum() > 0
+            else np.ones_like(exp_logits) / len(exp_logits)
+        )
+        choice = rng.choice(STANDARD_AAS, p=probs)
+        return choice
+    # Fallback: alanine
+    return "A"
+
+
+def representative_subsample_ids(sequences: dict, ids: list, n: int, seed: int = 42):
+    """Select n representative sequence ids from ids based on dipeptide frequency diversity.
+
+    Uses a greedy farthest-first traversal over L2 distance of normalized dipeptide frequency vectors.
+    Deterministic given the same seed.
+    """
+    if len(ids) <= n:
+        return ids
+
+    aa_to_idx = {aa: i for i, aa in enumerate(STANDARD_AAS)}
+    dim = len(STANDARD_AAS) * len(STANDARD_AAS)
+    m = len(ids)
+    X = np.zeros((m, dim), dtype=np.float32)
+    lengths = np.zeros(m, dtype=int)
+
+    for i, pid in enumerate(ids):
+        seq = sequences.get(pid, "")
+        lengths[i] = len(seq)
+        # dipeptide counts
+        for j in range(len(seq) - 1):
+            a = seq[j]
+            b = seq[j + 1]
+            if a in aa_to_idx and b in aa_to_idx:
+                idx = aa_to_idx[a] * len(STANDARD_AAS) + aa_to_idx[b]
+                X[i, idx] += 1.0
+        # L2 normalize if nonzero
+        norm = np.linalg.norm(X[i])
+        if norm > 0:
+            X[i] /= norm
+
+    # initialize with the longest sequence to prefer full-length representatives
+    first = int(np.argmax(lengths))
+    selected = [first]
+    remaining = set(range(m)) - {first}
+
+    # precompute squared norms for fast distances
+    # greedy farthest-first
+    while len(selected) < n and remaining:
+        sel_mat = X[selected]
+        # compute min distance to selected for each remaining
+        rem_idx = np.array(sorted(remaining), dtype=int)
+        rem_mat = X[rem_idx]
+        # compute squared distances efficiently: ||u-v||^2 = ||u||^2 + ||v||^2 - 2u.v
+        # precompute norms
+        sel_norms = np.sum(sel_mat * sel_mat, axis=1)
+        rem_norms = np.sum(rem_mat * rem_mat, axis=1)
+        # dot products
+        dots = rem_mat.dot(sel_mat.T)
+        # compute min distances
+        dists = np.minimum.reduce([rem_norms[:, None] + sel_norms[None, :] - 2 * dots])
+        min_dists = np.min(dists, axis=1)
+        # pick index with max min_dist
+        pick_idx = int(np.argmax(min_dists))
+        pick = rem_idx[pick_idx]
+        selected.append(pick)
+        remaining.remove(pick)
+
+    # map back to ids
+    selected_ids = [ids[i] for i in selected[:n]]
+    return selected_ids
+
+
 def create_cluster_heatmaps(
-    df, protein_clusters, sequences, cluster_name, model_type, output_prefix, sdp_dict=None
+    df,
+    protein_clusters,
+    sequences,
+    cluster_name,
+    model_type,
+    output_prefix,
+    sdp_dict=None,
+    args=None,
 ):
     """Create heatmaps for all proteins in a cluster with proportional widths."""
     cluster_proteins = protein_clusters[protein_clusters["predicted_class"] == cluster_name][
@@ -177,7 +744,14 @@ def create_cluster_heatmaps(
 
 
 def create_cluster_msa_with_ablation_coloring(
-    df, protein_clusters, sequences, cluster_name, model_type, output_prefix, sdp_dict=None
+    df,
+    protein_clusters,
+    sequences,
+    cluster_name,
+    model_type,
+    output_prefix,
+    sdp_dict=None,
+    args=None,
 ):
     """Create MSA for cluster with residues colored by ablation scores."""
     cluster_proteins = protein_clusters[protein_clusters["predicted_class"] == cluster_name][
@@ -200,9 +774,42 @@ def create_cluster_msa_with_ablation_coloring(
 
     print(f"Creating MSA for {cluster_name} cluster with {len(cluster_sequences)} proteins")
 
-    # Create temporary FASTA file for MAFFT
+    # Decide whether to subsample before creating FASTA for MAFFT
+    subsampled_ids = None
+    if args is not None:
+        max_seqs = getattr(args, "max_msa_seqs", 100)
+        subsample_enabled = getattr(args, "subsample_msa", False)
+        seed = getattr(args, "random_seed", 42)
+    else:
+        max_seqs = 100
+        subsample_enabled = False
+        seed = 42
+
+    all_ids = list(cluster_sequences.keys())
+    if subsample_enabled and len(all_ids) > max_seqs:
+        # Estimate alignment length as median sequence length of cluster
+        seq_lengths = [len(cluster_sequences[p]) for p in all_ids]
+        est_len = int(np.median(seq_lengths)) if seq_lengths else 0
+        max_total = getattr(args, "max_total_residues", 50000) if args is not None else 50000
+        if est_len > 0:
+            max_proteins_by_residues = max(2, int(max_total // est_len))
+        else:
+            max_proteins_by_residues = max_seqs
+
+        target_n = min(max_seqs, max_proteins_by_residues)
+        target_n = max(2, target_n)
+
+        subsampled_ids = representative_subsample_ids(cluster_sequences, all_ids, target_n, seed)
+        print(
+            f"Cluster {cluster_name} has {len(all_ids)} sequences; estimated alignment len={est_len}; subsampling to {len(subsampled_ids)} sequences for MSA/plotting (target_n={target_n})"
+        )
+    else:
+        subsampled_ids = all_ids
+
+    # Create temporary FASTA file for MAFFT containing only subsampled sequences
     with tempfile.NamedTemporaryFile(mode="w", suffix=".fasta", delete=False) as temp_fasta:
-        for protein_id, seq in cluster_sequences.items():
+        for protein_id in subsampled_ids:
+            seq = cluster_sequences[protein_id]
             temp_fasta.write(f">{protein_id}\n{seq}\n")
         temp_fasta_path = temp_fasta.name
 
@@ -226,7 +833,7 @@ def create_cluster_msa_with_ablation_coloring(
 
         # Create ablation score mapping for each protein
         protein_ablation_scores = {}
-        for protein_id in cluster_sequences.keys():
+        for protein_id in subsampled_ids:
             protein_data = df[(df["protein_id"] == protein_id) & (df["class"] == cluster_name)]
             if not protein_data.empty:
                 scores = protein_data.set_index("residue")["ablation_score"]
@@ -234,7 +841,13 @@ def create_cluster_msa_with_ablation_coloring(
 
         # Create colored MSA visualization
         create_colored_msa_plot(
-            alignment, protein_ablation_scores, cluster_name, model_type, output_prefix, sdp_dict
+            alignment,
+            protein_ablation_scores,
+            cluster_name,
+            model_type,
+            output_prefix,
+            sdp_dict,
+            args,
         )
 
     finally:
@@ -243,16 +856,37 @@ def create_cluster_msa_with_ablation_coloring(
 
 
 def create_colored_msa_plot(
-    alignment, protein_ablation_scores, cluster_name, model_type, output_prefix, sdp_dict=None
+    alignment,
+    protein_ablation_scores,
+    cluster_name,
+    model_type,
+    output_prefix,
+    sdp_dict=None,
+    args=None,
 ):
     """Create a colored MSA plot with ablation scores - rewritten for memory efficiency."""
     num_seqs = len(alignment)
     align_len = alignment.get_alignment_length()
 
-    # For very large MSAs, skip visualization to avoid memory issues
-    if num_seqs > 100 or align_len > 2000:
+    # Configurable thresholds for skipping large MSAs (can be overridden by --force-plots)
+    max_seqs = None
+    max_len = None
+    force = False
+    if args is not None:
+        max_seqs = getattr(args, "max_msa_seqs", None)
+        max_len = getattr(args, "max_msa_length", None)
+        force = getattr(args, "force_plots", False)
+
+    # Use defaults if not provided
+    if max_seqs is None:
+        max_seqs = 100
+    if max_len is None:
+        max_len = 2000
+
+    if not force and (num_seqs > max_seqs or align_len > max_len):
         print(
-            f"Skipping MSA visualization for {cluster_name} - too large ({num_seqs} sequences, {align_len} positions)"
+            f"Skipping MSA visualization for {cluster_name} - too large ({num_seqs} sequences, {align_len} positions)."
+            f" Thresholds: max_seqs={max_seqs}, max_len={max_len}. Use --force-plots to override."
         )
         return
 
@@ -432,89 +1066,166 @@ def create_colored_msa_plot(
 
 
 # --- Main ablation logic ---
-def ablation_scores_for_protein(seq_id, sequence, model, probe, window_size):
+def ablation_scores_for_protein(
+    seq_id,
+    sequence,
+    model,
+    probe,
+    window_size,
+    scan_mode="ablation",
+    mutation_policy: str = "alanine",
+    random_seed: int = 42,
+    blosum_name: str = "blosum62",
+    blosum_temp: float = 1.0,
+    progress: bool = True,
+):
     # Use new standardized interface for residue and mean embeddings
     if not (hasattr(model, "get_residue_embeddings") and hasattr(model, "get_mean_embedding")):
         raise ValueError(
             "Model must implement get_residue_embeddings and get_mean_embedding methods."
         )
-    residue_emb = model.get_residue_embeddings(sequence, seq_id)
-    residue_seq_len, emb_dim = residue_emb.shape
-    actual_seq_len = len(sequence)
-
-    # Handle case where residue_emb might be shorter than sequence (due to special token removal)
-    if residue_seq_len != actual_seq_len:
-        print(
-            f"WARNING: {seq_id} - sequence length {actual_seq_len} != residue embeddings length {residue_seq_len}"
-        )
-        # Pad residue_emb to match sequence length if needed
-        if residue_seq_len < actual_seq_len:
-            padding = np.zeros((actual_seq_len - residue_seq_len, emb_dim))
-            residue_emb = np.vstack([residue_emb, padding])
-        else:
-            # Truncate if residue_emb is longer (shouldn't happen but just in case)
-            residue_emb = residue_emb[:actual_seq_len]
-
-    seq_len = actual_seq_len
+    seq_len = len(sequence)
     # Full mean-pooled embedding
     full_emb = model.get_mean_embedding(sequence, seq_id)
     # Get full sequence cluster probabilities
     full_emb_norm = probe.normalize_embedding(full_emb.reshape(1, -1))
     full_probs = probe.model.predict_proba(full_emb_norm)[0]
-    # For each window, ablate and score
+    # For each residue/window, score according to scan_mode
     ablation_scores = np.zeros((seq_len, len(full_probs)))
-    # For storing extra info for output
     ablation_details = [{} for _ in range(seq_len)]
     most_probable_cluster = np.argmax(full_probs)
     full_pred = most_probable_cluster
     penalty = 100.0  # Large penalty for cluster change
-    for start in range(seq_len):
-        end = min(start + window_size, seq_len)
-        mask = np.ones(seq_len, dtype=bool)
-        mask[start:end] = False
-        ablated_emb = mean_pool_embedding(residue_emb, mask)
-        ablated_emb_norm = probe.normalize_embedding(ablated_emb.reshape(1, -1))
-        ablated_probs = probe.model.predict_proba(ablated_emb_norm)[0]
-        ablated_pred = np.argmax(ablated_probs)
-        # If cluster assignment changes, add a large penalty
-        if ablated_pred != full_pred:
-            for i in range(start, end):
+
+    if scan_mode == "ablation":
+        # Use residue embeddings and mean-pool with masked window
+        residue_emb = model.get_residue_embeddings(sequence, seq_id)
+        residue_seq_len, emb_dim = residue_emb.shape
+        actual_seq_len = seq_len
+        if residue_seq_len != actual_seq_len:
+            print(
+                f"WARNING: {seq_id} - sequence length {actual_seq_len} != residue embeddings length {residue_seq_len}"
+            )
+            if residue_seq_len < actual_seq_len:
+                padding = np.zeros((actual_seq_len - residue_seq_len, emb_dim))
+                residue_emb = np.vstack([residue_emb, padding])
+            else:
+                residue_emb = residue_emb[:actual_seq_len]
+
+        # Progress setup
+        report_every = max(1, seq_len // 10)
+        for start in range(seq_len):
+            end = min(start + window_size, seq_len)
+            mask = np.ones(seq_len, dtype=bool)
+            mask[start:end] = False
+            ablated_emb = mean_pool_embedding(residue_emb, mask)
+            ablated_emb_norm = probe.normalize_embedding(ablated_emb.reshape(1, -1))
+            ablated_probs = probe.model.predict_proba(ablated_emb_norm)[0]
+            ablated_pred = np.argmax(ablated_probs)
+
+            if progress and ((start + 1) % report_every == 0 or start == 0 or start == seq_len - 1):
+                pct = int(((start + 1) / seq_len) * 100)
+                sys.stdout.write(
+                    f"\r  [{seq_id}] {scan_mode}: {start + 1}/{seq_len} residues ({pct}%)"
+                )
+                sys.stdout.flush()
+
+            # If cluster assignment changes, add a large penalty
+            if ablated_pred != full_pred:
+                for i in range(start, end):
+                    ablation_scores[i, most_probable_cluster] += penalty
+                    ablation_details[i] = {
+                        "Pasigned_full": full_probs[most_probable_cluster],
+                        "Pasigned_ablated": ablated_probs[most_probable_cluster],
+                        "Pclosest_full": np.nan,
+                        "Pclosest_ablated": np.nan,
+                    }
+            else:
+                # Margin for full embedding
+                sorted_full = np.argsort(full_probs)[::-1]
+                competitor_full = (
+                    sorted_full[1] if sorted_full[0] == most_probable_cluster else sorted_full[0]
+                )
+                margin_full = full_probs[most_probable_cluster] - full_probs[competitor_full]
+
+                # Margin for ablated embedding
+                sorted_ablated = np.argsort(ablated_probs)[::-1]
+                competitor_ablated = (
+                    sorted_ablated[1]
+                    if sorted_ablated[0] == most_probable_cluster
+                    else sorted_ablated[0]
+                )
+                margin_ablated = (
+                    ablated_probs[most_probable_cluster] - ablated_probs[competitor_ablated]
+                )
+
+                # Score is the difference in margin (full - ablated)
+                margin_diff = margin_full - margin_ablated
+                for i in range(start, end):
+                    ablation_scores[i, most_probable_cluster] += margin_diff
+                    ablation_details[i] = {
+                        "Pasigned_full": full_probs[most_probable_cluster],
+                        "Pasigned_ablated": ablated_probs[most_probable_cluster],
+                        "Pclosest_full": full_probs[competitor_full],
+                        "Pclosest_ablated": ablated_probs[competitor_ablated],
+                    }
+    elif scan_mode == "ala-scanning":
+        # Replace a single residue at a time using a mutation policy and recompute mean-pooled embedding
+        rng = np.random.default_rng(random_seed)
+        report_every = max(1, seq_len // 10)
+        for i in range(seq_len):
+            # Choose mutant AA according to policy (default alanine)
+            mutant_aa = choose_mutant_aa(
+                sequence[i], mutation_policy, rng, blosum_name, blosum_temp
+            )
+            mutated_seq = sequence[:i] + mutant_aa + sequence[i + 1 :]
+
+            mut_emb = model.get_mean_embedding(mutated_seq, f"{seq_id}_ala_{i+1}")
+            mut_emb_norm = probe.normalize_embedding(mut_emb.reshape(1, -1))
+            ablated_probs = probe.model.predict_proba(mut_emb_norm)[0]
+            ablated_pred = np.argmax(ablated_probs)
+
+            if ablated_pred != full_pred:
                 ablation_scores[i, most_probable_cluster] += penalty
                 ablation_details[i] = {
                     "Pasigned_full": full_probs[most_probable_cluster],
                     "Pasigned_ablated": ablated_probs[most_probable_cluster],
                     "Pclosest_full": np.nan,
                     "Pclosest_ablated": np.nan,
+                    "mutant_aa": mutant_aa,
                 }
-        else:
-            # Margin for full embedding
-            sorted_full = np.argsort(full_probs)[::-1]
-            if sorted_full[0] == most_probable_cluster:
-                competitor_full = sorted_full[1]
             else:
-                competitor_full = sorted_full[0]
-            margin_full = full_probs[most_probable_cluster] - full_probs[competitor_full]
+                sorted_full = np.argsort(full_probs)[::-1]
+                competitor_full = (
+                    sorted_full[1] if sorted_full[0] == most_probable_cluster else sorted_full[0]
+                )
+                margin_full = full_probs[most_probable_cluster] - full_probs[competitor_full]
 
-            # Margin for ablated embedding
-            sorted_ablated = np.argsort(ablated_probs)[::-1]
-            if sorted_ablated[0] == most_probable_cluster:
-                competitor_ablated = sorted_ablated[1]
-            else:
-                competitor_ablated = sorted_ablated[0]
-            margin_ablated = (
-                ablated_probs[most_probable_cluster] - ablated_probs[competitor_ablated]
-            )
-
-            # Score is the difference in margin (full - ablated)
-            margin_diff = margin_full - margin_ablated
-            for i in range(start, end):
+                sorted_ablated = np.argsort(ablated_probs)[::-1]
+                competitor_ablated = (
+                    sorted_ablated[1]
+                    if sorted_ablated[0] == most_probable_cluster
+                    else sorted_ablated[0]
+                )
+                margin_ablated = (
+                    ablated_probs[most_probable_cluster] - ablated_probs[competitor_ablated]
+                )
+                margin_diff = margin_full - margin_ablated
                 ablation_scores[i, most_probable_cluster] += margin_diff
                 ablation_details[i] = {
                     "Pasigned_full": full_probs[most_probable_cluster],
                     "Pasigned_ablated": ablated_probs[most_probable_cluster],
                     "Pclosest_full": full_probs[competitor_full],
                     "Pclosest_ablated": ablated_probs[competitor_ablated],
+                    "mutant_aa": mutant_aa,
                 }
+
+            if progress and ((i + 1) % report_every == 0 or i == 0 or i == seq_len - 1):
+                pct = int(((i + 1) / seq_len) * 100)
+                sys.stdout.write(f"\r  [{seq_id}] {scan_mode}: {i + 1}/{seq_len} residues ({pct}%)")
+                sys.stdout.flush()
+    else:
+        raise ValueError(f"Unknown scan_mode: {scan_mode}")
     return ablation_scores, full_probs, ablation_details
 
 
@@ -533,8 +1244,48 @@ def parse_arguments():
     parser.add_argument("--model_name", help="Model name/path (model-specific)")
     parser.add_argument("--device", default="auto", help="Device to use (auto, cuda, cpu)")
     parser.add_argument("--probe_model", required=True, help="Trained linear probe model (pickle)")
-    parser.add_argument("--window_size", type=int, required=True, help="Window size L for ablation")
+    parser.add_argument(
+        "--window_size",
+        type=int,
+        default=5,
+        help="Window size L for ablation (default: 5). Ignored for --scan_mode ala-scanning",
+    )
     parser.add_argument("--output_prefix", required=True, help="Prefix for output files")
+    parser.add_argument(
+        "--scan_mode",
+        choices=["ablation", "ala-scanning"],
+        default="ablation",
+        help="Scanning mode: ablation (mask window and mean-pool) or ala-scanning (per-residue mutation using a policy)",
+    )
+    parser.add_argument(
+        "--mutation_policy",
+        choices=["alanine", "to-x", "random", "blosum"],
+        default="alanine",
+        help="Policy for selecting the replacement residue when scan_mode=ala-scanning",
+    )
+    parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=42,
+        help="Random seed used for stochastic mutation policies",
+    )
+    parser.add_argument(
+        "--blosum_name",
+        choices=["blosum62"],
+        default="blosum62",
+        help="Which BLOSUM matrix to use when mutation_policy=blosum",
+    )
+    parser.add_argument(
+        "--blosum_temp",
+        type=float,
+        default=1.0,
+        help="Temperature for softmax sampling from BLOSUM scores (lower=sharper)",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable progress indicators",
+    )
     parser.add_argument(
         "--model_args",
         nargs="*",
@@ -546,6 +1297,55 @@ def parse_arguments():
         type=str,
         default=None,
         help="Optional: Path to SDP TSV file (first column: protein ids, next columns: residue coordinates)",
+    )
+    parser.add_argument(
+        "--no-heatmap",
+        action="store_true",
+        help="Skip proportional-width heatmap plots (cluster heatmaps)",
+    )
+    parser.add_argument(
+        "--no-alignment-plots",
+        action="store_true",
+        help="Skip MSA / alignment plots (colored MSAs)",
+    )
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip all plotting/visualizations (equivalent to --no-strip-plots and --no-alignment-plots)",
+    )
+    parser.add_argument(
+        "--max-clusters-to-plot",
+        type=int,
+        default=None,
+        help="Maximum number of clusters to generate plots for (None = all)",
+    )
+    parser.add_argument(
+        "--max-msa-seqs",
+        type=int,
+        default=100,
+        help="Maximum number of sequences in an MSA before skipping the colored MSA plot (default: 100)",
+    )
+    parser.add_argument(
+        "--max-msa-length",
+        type=int,
+        default=2000,
+        help="Maximum MSA alignment length (positions) before skipping colored MSA plot (default: 2000)",
+    )
+    parser.add_argument(
+        "--force-plots",
+        action="store_true",
+        help="Force generation of plots even if they exceed safety thresholds",
+    )
+    parser.add_argument(
+        "--subsample-msa",
+        action="store_true",
+        help="If set and the cluster has more sequences than --max-msa-seqs, subsample to --max-msa-seqs for MSA+plotting",
+    )
+    parser.add_argument(
+        "--max-total-residues",
+        type=int,
+        default=50000,
+        help="Maximum total residues for MSA plotting (estimated alignment length * num_proteins). Subsampling will keep proteins so product <= this (default: 50000)",
     )
     # Normalization options (match linear_probe.py)
     parser.add_argument(
@@ -753,10 +1553,26 @@ def compute_all_ablation_scores(sequences, model, probe, args):
     )
 
     all_scores = []
-    for seq_id, seq in sequences.items():
+    total = len(sequences)
+    for idx, (seq_id, seq) in enumerate(sequences.items(), start=1):
+        if not getattr(args, "no_progress", False):
+            print(f"Processing protein {idx}/{total}: {seq_id} (len={len(seq)})", flush=True)
         ablation_scores, full_probs, ablation_details = ablation_scores_for_protein(
-            seq_id, seq, model, probe, args.window_size
+            seq_id,
+            seq,
+            model,
+            probe,
+            args.window_size,
+            args.scan_mode,
+            args.mutation_policy,
+            args.random_seed,
+            args.blosum_name,
+            args.blosum_temp,
+            progress=(not getattr(args, "no_progress", False)),
         )
+        if not getattr(args, "no_progress", False):
+            # Finish any in-line progress line from per-residue loop
+            print("")
         for i, aa in enumerate(seq):
             for c, cname in enumerate(class_names):
                 score = ablation_scores[i, c]
@@ -768,6 +1584,7 @@ def compute_all_ablation_scores(sequences, model, probe, args):
                             "protein_id": seq_id,
                             "residue": i + 1,  # 1-based position
                             "aa": aa,
+                            "mutant_aa": details.get("mutant_aa", np.nan),
                             "class": cname,
                             "ablation_score": score,  # 0-based index
                             "Pasigned_full": details.get("Pasigned_full", np.nan),
@@ -799,27 +1616,54 @@ def generate_visualizations(df, sequences, args, sdp_dict=None):
 
     # Generate cluster heatmaps for each unique cluster
     clusters = protein_clusters["predicted_class"].unique()
-    print(f"Generating cluster heatmaps for {len(clusters)} clusters: {list(clusters)}")
+    # Order clusters by size (descending) for plotting priority
+    cluster_sizes = protein_clusters.groupby("predicted_class").size().sort_values(ascending=False)
+    clusters_sorted = list(cluster_sizes.index)
 
-    for cluster_name in clusters:
-        create_cluster_heatmaps(
-            df,
-            protein_clusters,
-            sequences,
-            cluster_name,
-            args.model_type,
-            args.output_prefix,
-            sdp_dict,
+    if args.max_clusters_to_plot is not None:
+        clusters_to_plot = clusters_sorted[: args.max_clusters_to_plot]
+        print(
+            f"Generating plots for top {len(clusters_to_plot)} of {len(clusters_sorted)} clusters: {clusters_to_plot}"
         )
-        create_cluster_msa_with_ablation_coloring(
-            df,
-            protein_clusters,
-            sequences,
-            cluster_name,
-            args.model_type,
-            args.output_prefix,
-            sdp_dict,
-        )
+    else:
+        clusters_to_plot = clusters_sorted
+        print(f"Generating cluster plots for {len(clusters_to_plot)} clusters: {clusters_to_plot}")
+
+    for cluster_name in clusters_to_plot:
+        # Skip all plotting if requested
+        if getattr(args, "no_plots", False):
+            print(f"Skipping all plots for cluster {cluster_name} (--no-plots)")
+            continue
+
+        # Heatmap / proportional-width heatmaps
+        if not getattr(args, "no_heatmap", False):
+            create_cluster_heatmaps(
+                df,
+                protein_clusters,
+                sequences,
+                cluster_name,
+                args.model_type,
+                args.output_prefix,
+                sdp_dict,
+                args,
+            )
+        else:
+            print(f"Skipping heatmap plots for cluster {cluster_name} (--no-heatmap)")
+
+        # Alignment / colored MSA plots
+        if not getattr(args, "no_alignment_plots", False):
+            create_cluster_msa_with_ablation_coloring(
+                df,
+                protein_clusters,
+                sequences,
+                cluster_name,
+                args.model_type,
+                args.output_prefix,
+                sdp_dict,
+                args,
+            )
+        else:
+            print(f"Skipping alignment/MSA plots for cluster {cluster_name} (--no-alignment-plots)")
 
 
 def main():
