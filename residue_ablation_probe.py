@@ -29,11 +29,15 @@ Outputs:
 
 import argparse
 import math
+import multiprocessing as mp
 import os
 import pickle
 import subprocess
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 from io import StringIO
 
 import matplotlib.patches as mpatches
@@ -1287,6 +1291,12 @@ def parse_arguments():
         help="Disable progress indicators",
     )
     parser.add_argument(
+        "--n-processes",
+        type=int,
+        default=1,
+        help="Number of parallel threads to use for protein processing (default: 1 for serial processing)",
+    )
+    parser.add_argument(
         "--model_args",
         nargs="*",
         default=[],
@@ -1399,11 +1409,30 @@ def parse_arguments():
 
 
 def load_input_sequences(args):
-    """Load sequences from input file."""
+    """Load sequences from input file, filtering out invalid entries."""
     if args.input_type == "fasta":
         return load_sequences_from_fasta(args.input)
     else:
-        return load_sequences_from_tsv(args.input, args.id_column, args.seq_column)
+        # Load sequences and filter out NaN/missing values
+        sequences = load_sequences_from_tsv(args.input, args.id_column, args.seq_column)
+
+        # Filter out invalid sequences
+        valid_sequences = {}
+        for seq_id, seq in sequences.items():
+            if pd.isna(seq) or pd.isna(seq_id) or seq == "NA" or seq_id == "NA":
+                print(
+                    f"Warning: Skipping sequence with invalid data - ID: {seq_id}, sequence: {seq}"
+                )
+                continue
+            if not isinstance(seq, str) or len(seq) == 0:
+                print(
+                    f"Warning: Skipping sequence with invalid format - ID: {seq_id}, sequence type: {type(seq)}"
+                )
+                continue
+            valid_sequences[seq_id] = seq
+
+        print(f"Loaded {len(valid_sequences)} valid sequences out of {len(sequences)} total")
+        return valid_sequences
 
 
 def parse_model_arguments(args):
@@ -1544,8 +1573,90 @@ def load_and_setup_probe(args):
         return setup_probe_wrapper(probe_obj, args)
 
 
+def process_single_protein(protein_data, model, probe, args):
+    """
+    Process a single protein for ablation scores.
+
+    Args:
+        protein_data: tuple of (seq_id, sequence, protein_index, total_proteins)
+        model: protein language model
+        probe: trained probe model
+        args: command line arguments
+
+    Returns:
+        list of score dictionaries for this protein
+    """
+    seq_id, seq, protein_idx, total_proteins = protein_data
+
+    class_names = (
+        probe.class_names
+        if hasattr(probe, "class_names")
+        else [str(i) for i in range(probe.model.coef_.shape[0])]
+    )
+
+    if not getattr(args, "no_progress", False):
+        print(
+            f"Processing protein {protein_idx}/{total_proteins}: {seq_id} (len={len(seq)})",
+            flush=True,
+        )
+
+    ablation_scores, full_probs, ablation_details = ablation_scores_for_protein(
+        seq_id,
+        seq,
+        model,
+        probe,
+        args.window_size,
+        args.scan_mode,
+        args.mutation_policy,
+        args.random_seed,
+        args.blosum_name,
+        args.blosum_temp,
+        progress=(not getattr(args, "no_progress", False)),
+    )
+
+    protein_scores = []
+    for i, aa in enumerate(seq):
+        for c, cname in enumerate(class_names):
+            score = ablation_scores[i, c]
+            # Only output rows with nonzero score
+            if score != 0:
+                details = ablation_details[i]
+                protein_scores.append(
+                    {
+                        "protein_id": seq_id,
+                        "residue": i + 1,  # 1-based position
+                        "aa": aa,
+                        "mutant_aa": details.get("mutant_aa", np.nan),
+                        "class": cname,
+                        "ablation_score": score,  # 0-based index
+                        "Pasigned_full": details.get("Pasigned_full", np.nan),
+                        "Pasigned_ablated": details.get("Pasigned_ablated", np.nan),
+                        "Pclosest_full": details.get("Pclosest_full", np.nan),
+                        "Pclosest_ablated": details.get("Pclosest_ablated", np.nan),
+                    }
+                )
+
+    if not getattr(args, "no_progress", False):
+        # Finish any in-line progress line from per-residue loop
+        print("")
+
+    return protein_scores
+
+
 def compute_all_ablation_scores(sequences, model, probe, args):
-    """Compute ablation scores for all proteins."""
+    """Compute ablation scores for all proteins, optionally in parallel."""
+    n_processes = getattr(args, "n_processes", 1)
+
+    if n_processes == 1:
+        # Serial processing (original behavior)
+        return compute_all_ablation_scores_serial(sequences, model, probe, args)
+    else:
+        # Parallel processing
+        return compute_all_ablation_scores_parallel(sequences, model, probe, args, n_processes)
+
+
+def compute_all_ablation_scores_serial(sequences, model, probe, args):
+    """Compute ablation scores for all proteins serially (original behavior)."""
     class_names = (
         probe.class_names
         if hasattr(probe, "class_names")
@@ -1594,6 +1705,111 @@ def compute_all_ablation_scores(sequences, model, probe, args):
                         }
                     )
     return pd.DataFrame(all_scores)
+
+
+def process_single_protein_shared(protein_data, model, probe, args):
+    """
+    Process a single protein for ablation scores using shared model and probe.
+
+    Args:
+        protein_data: tuple of (seq_id, sequence, protein_index, total_proteins)
+        model: shared protein language model
+        probe: shared trained probe model
+        args: command line arguments
+
+    Returns:
+        list of score dictionaries for this protein
+    """
+    seq_id, seq, protein_idx, total_proteins = protein_data
+
+    class_names = (
+        probe.class_names
+        if hasattr(probe, "class_names")
+        else [str(i) for i in range(probe.model.coef_.shape[0])]
+    )
+
+    if not getattr(args, "no_progress", False):
+        # Thread-safe print
+        print(
+            f"Processing protein {protein_idx}/{total_proteins}: {seq_id} (len={len(seq)})",
+            flush=True,
+        )
+
+    ablation_scores, full_probs, ablation_details = ablation_scores_for_protein(
+        seq_id,
+        seq,
+        model,
+        probe,
+        args.window_size,
+        args.scan_mode,
+        args.mutation_policy,
+        args.random_seed,
+        args.blosum_name,
+        args.blosum_temp,
+        progress=(not getattr(args, "no_progress", False)),
+    )
+
+    protein_scores = []
+    for i, aa in enumerate(seq):
+        for c, cname in enumerate(class_names):
+            score = ablation_scores[i, c]
+            # Only output rows with nonzero score
+            if score != 0:
+                details = ablation_details[i]
+                protein_scores.append(
+                    {
+                        "protein_id": seq_id,
+                        "residue": i + 1,  # 1-based position
+                        "aa": aa,
+                        "mutant_aa": details.get("mutant_aa", np.nan),
+                        "class": cname,
+                        "ablation_score": score,  # 0-based index
+                        "Pasigned_full": details.get("Pasigned_full", np.nan),
+                        "Pasigned_ablated": details.get("Pasigned_ablated", np.nan),
+                        "Pclosest_full": details.get("Pclosest_full", np.nan),
+                        "Pclosest_ablated": details.get("Pclosest_ablated", np.nan),
+                    }
+                )
+
+    if not getattr(args, "no_progress", False):
+        # Finish any in-line progress line from per-residue loop
+        print("")
+
+    return protein_scores
+
+
+def compute_all_ablation_scores_parallel(sequences, model, probe, args, n_processes):
+    """Compute ablation scores for all proteins in parallel using threading."""
+    print(f"Using parallel processing with {n_processes} threads (shared model)")
+
+    # Prepare data for parallel processing
+    total = len(sequences)
+    protein_data_list = []
+    for idx, (seq_id, seq) in enumerate(sequences.items(), start=1):
+        protein_data_list.append((seq_id, seq, idx, total))
+
+    try:
+        # Use threading instead of multiprocessing to share the model
+        all_scores = []
+        with ThreadPoolExecutor(max_workers=n_processes) as executor:
+            # Submit all tasks
+            future_to_protein = {
+                executor.submit(
+                    process_single_protein_shared, protein_data, model, probe, args
+                ): protein_data
+                for protein_data in protein_data_list
+            }
+
+            # Collect results as they complete
+            for future in as_completed(future_to_protein):
+                protein_scores = future.result()
+                all_scores.extend(protein_scores)
+
+        return pd.DataFrame(all_scores)
+
+    except Exception as e:
+        print(f"Parallel processing failed, falling back to serial: {e}")
+        return compute_all_ablation_scores_serial(sequences, model, probe, args)
 
 
 def save_ablation_scores(df, args):
@@ -1678,6 +1894,9 @@ def main():
     model_kwargs = parse_model_arguments(args)
     device = setup_device(args)
     model = load_and_setup_model(args, model_kwargs, device)
+
+    # Store model_kwargs in args for parallel processing
+    args._model_kwargs = model_kwargs
 
     # Setup probe
     probe = load_and_setup_probe(args)
