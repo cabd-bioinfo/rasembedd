@@ -71,9 +71,11 @@ python generate_visualizations.py data/RAS.updated.Info.Table.V7.tsv -e embeddin
 - `--output_format`: Output format (`pdf`, `png`, `svg`, default: pdf)
 - `--dpi`: Output DPI (default: 300)
 - `--show_labels`: Show protein ID labels on projections
+- `--no_labels`: Hide protein ID labels even though they are shown by default
 - `--max_labels`: Maximum number of labels to show (default: 100)
 - `--label_fontsize`: Font size for labels (default: 8)
 - `--show_species`: Use different markers for each species (from uniprot_id)
+- `--no_species`: Force a single marker for every point, ignoring species
 - `--skip_heatmap`: Skip heatmap generation
 - `--skip_projection`: Skip projection generation
 - `--output_prefix`: Prefix for output filenames

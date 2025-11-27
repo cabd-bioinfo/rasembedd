@@ -847,6 +847,7 @@ Examples:
     # Label options
     parser.add_argument(
         "--show_labels",
+        dest="show_labels",
         action="store_true",
         default=True,
         help="Show protein ID labels on projection plots (default: True)",
@@ -865,9 +866,22 @@ Examples:
     )
     parser.add_argument(
         "--show_species",
+        dest="show_species",
         action="store_true",
         default=True,
         help="Show species as different marker shapes (from species column or UniProt IDs) (default: True)",
+    )
+    parser.add_argument(
+        "--no_labels",
+        dest="show_labels",
+        action="store_false",
+        help="Hide protein ID labels on projection plots",
+    )
+    parser.add_argument(
+        "--no_species",
+        dest="show_species",
+        action="store_false",
+        help="Use a single marker for all species",
     )
     parser.add_argument(
         "--species_column",
