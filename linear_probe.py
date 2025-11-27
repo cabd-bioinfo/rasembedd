@@ -440,6 +440,8 @@ class LinearProbe:
         y_prob = []
         test_proteins = []
         fold_scores = []
+        fold_f1_macro = []
+        fold_f1_weighted = []
 
         print(f"Running {n_folds} fold iterations...")
 
@@ -490,12 +492,19 @@ class LinearProbe:
             pred = model.predict(X_test_norm)
             prob = model.predict_proba(X_test_norm)
 
-            # Calculate fold accuracy
-            from sklearn.metrics import accuracy_score
+            # Calculate fold metrics
+            from sklearn.metrics import accuracy_score, f1_score
 
             fold_acc = accuracy_score(y_test, pred)
+            fold_macro = f1_score(y_test, pred, average="macro", zero_division=0)
+            fold_weighted = f1_score(y_test, pred, average="weighted", zero_division=0)
             fold_scores.append(fold_acc)
-            print(f"    Fold {fold+1} accuracy: {fold_acc:.4f}")
+            fold_f1_macro.append(fold_macro)
+            fold_f1_weighted.append(fold_weighted)
+            print(
+                f"    Fold {fold+1} metrics -> accuracy: {fold_acc:.4f}, "
+                f"f1_macro: {fold_macro:.4f}, f1_weighted: {fold_weighted:.4f}"
+            )
 
             # Store results
             y_true.extend(y_test)
@@ -508,9 +517,13 @@ class LinearProbe:
             # Get the classes that this model was trained on
             model_classes = model.classes_
 
-            # Map model classes to overall class indices
+            # Map model classes (encoded integers) to overall class indices
             for i, model_class in enumerate(model_classes):
-                overall_idx = np.where(self.class_names == model_class)[0]
+                try:
+                    class_label = self.label_encoder.inverse_transform([model_class])[0]
+                except Exception:
+                    class_label = model_class
+                overall_idx = np.where(self.class_names == class_label)[0]
                 if len(overall_idx) > 0:
                     prob_padded[:, overall_idx[0]] = prob[:, i]
 
@@ -566,6 +579,8 @@ class LinearProbe:
             "accuracy": accuracy,
             "accuracy_std": np.std(fold_scores),
             "fold_scores": fold_scores,
+            "fold_f1_macro": fold_f1_macro,
+            "fold_f1_weighted": fold_f1_weighted,
             "f1_macro": f1_macro,
             "f1_micro": f1_micro,
             "f1_weighted": f1_weighted,
@@ -1073,6 +1088,32 @@ class LinearProbe:
             metrics_file = os.path.join(output_dir, f"{base_name}_metrics.tsv")
             metrics_df.to_csv(metrics_file, sep="\t", index=False)
             print(f"Saved metrics to {metrics_file}")
+
+            # Save per-fold scores when available (e.g., K-fold CV)
+            if results.get("fold_scores"):
+                fold_data = {
+                    "fold": np.arange(1, len(results["fold_scores"]) + 1),
+                    "accuracy": results["fold_scores"],
+                }
+                if results.get("fold_f1_macro"):
+                    fold_data["f1_macro"] = results["fold_f1_macro"]
+                if results.get("fold_f1_weighted"):
+                    fold_data["f1_weighted"] = results["fold_f1_weighted"]
+                fold_scores_df = pd.DataFrame(fold_data)
+                mean_row = {
+                    "fold": "mean",
+                    "accuracy": float(np.mean(results["fold_scores"])),
+                }
+                if results.get("fold_f1_macro"):
+                    mean_row["f1_macro"] = float(np.mean(results["fold_f1_macro"]))
+                if results.get("fold_f1_weighted"):
+                    mean_row["f1_weighted"] = float(np.mean(results["fold_f1_weighted"]))
+                fold_scores_df = pd.concat(
+                    [fold_scores_df, pd.DataFrame([mean_row])], ignore_index=True
+                )
+                fold_scores_file = os.path.join(output_dir, f"{base_name}_fold_scores.tsv")
+                fold_scores_df.to_csv(fold_scores_file, sep="\t", index=False)
+                print(f"Saved per-fold scores to {fold_scores_file}")
 
             # Save classification report, with warning row if training-only
             report_df = pd.DataFrame(results["classification_report"]).T
